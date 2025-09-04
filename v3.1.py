@@ -34,7 +34,7 @@ class PlottingApp(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("多功能繪圖工具-V3.9")
+        self.setWindowTitle("多功能繪圖工具-V3.1")
         self.setGeometry(100, 100, 1200, 800)
         
         # 設置 Matplotlib 字體以支援中文顯示
@@ -1592,3 +1592,4 @@ if __name__ == '__main__':
         QMessageBox.critical(None, "啟動失敗", f"程式啟動失敗，請確認所有必要的函式庫都已安裝。\n\n詳細錯誤：{e}")
     except Exception as e:
         QMessageBox.critical(None, "程式啟動錯誤", f"啟動時發生未預期的錯誤。\n\n詳細錯誤：{e}")
+
