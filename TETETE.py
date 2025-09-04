@@ -1,0 +1,598 @@
+import sys
+import os
+import json
+from zipfile import BadZipFile
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import matplotlib.ticker as ticker
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT
+from matplotlib.path import Path as MplPath
+from matplotlib.patches import PathPatch
+
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLayout,
+    QGridLayout, QLabel, QLineEdit, QPushButton, QComboBox, QFileDialog,
+    QDoubleSpinBox, QMessageBox, QColorDialog, QCheckBox, QTabWidget,
+    QTableWidget, QTableWidgetItem, QSpinBox, QScrollArea, QFrame,
+    QListWidget, QAbstractItemView, QHeaderView, QTableView
+)
+from PySide6.QtCore import (
+    Qt, QObject, QRunnable, QThreadPool, Signal, Slot,
+    QSortFilterProxyModel, QAbstractTableModel, QModelIndex, QTimer
+)
+from PySide6.QtGui import QColor, QPalette, QKeySequence
+
+# 檢查 scipy 是否存在，並處理 ImportError
+try:
+    from scipy.interpolate import PchipInterpolator
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    print("警告: 找不到 scipy 函式庫，平滑曲線功能將不可用。請使用 'pip install scipy' 進行安裝。")
+
+# --- 核心架構：MVC (模型-視圖-控制器) ---
+
+class DataManager(QObject):
+    """
+    模型 (Model): 負責所有數據的載入、儲存、管理與操作。
+    """
+    dataChanged = Signal()
+    fileLoadFinished = Signal(list)
+    fileLoadError = Signal(str)
+    
+    DEFAULT_COLOR_CYCLE = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.datasets = []
+        self.original_datasets = [] # 用於排序恢復
+        self.excel_data = None
+        self.threadpool = QThreadPool()
+        print("DataManager 執行緒池已啟動...")
+
+    def load_file_async(self, filename):
+        worker = FileLoaderWorker(filename)
+        worker.signals.finished.connect(self._on_file_load_finished)
+        worker.signals.error.connect(self.fileLoadError.emit)
+        self.threadpool.start(worker)
+
+    @Slot(pd.DataFrame, str)
+    def _on_file_load_finished(self, dataframe, filename):
+        self.excel_data = dataframe
+        all_cols = self.excel_data.columns.tolist()
+        self.fileLoadFinished.emit(all_cols)
+
+    def update_from_file_selection(self, x_col, y_cols):
+        if self.excel_data is None or not x_col or not y_cols:
+            self.datasets = []
+            self.dataChanged.emit()
+            return
+        try:
+            x_data = self.excel_data[x_col].apply(pd.to_numeric, errors='coerce').dropna().tolist()
+            new_datasets = []
+            for i, y_col in enumerate(y_cols):
+                y_data = self.excel_data[y_col].apply(pd.to_numeric, errors='coerce').dropna().tolist()
+                min_len = min(len(x_data), len(y_data))
+                color = self.DEFAULT_COLOR_CYCLE[i % len(self.DEFAULT_COLOR_CYCLE)]
+                dataset = {
+                    'name': y_col, 'x': x_data[:min_len], 'y': y_data[:min_len],
+                    'colors': [color] * min_len, 'primary_color': color,
+                    'line_segment_colors': [color] * (min_len -1)
+                }
+                new_datasets.append(dataset)
+            self.datasets = new_datasets
+            self.original_datasets = [ds.copy() for ds in self.datasets]
+            self.dataChanged.emit()
+        except Exception as e:
+            self.fileLoadError.emit(f"選擇的欄位有問題或包含非數值資料: {e}")
+
+    def add_row(self):
+        if not self.datasets:
+            color = self.DEFAULT_COLOR_CYCLE[0]
+            self.datasets.append({
+                'name': '數據1', 'x': [0], 'y': [0], 'colors': [color],
+                'primary_color': color, 'line_segment_colors': []
+            })
+        else:
+            for i, dataset in enumerate(self.datasets):
+                last_x = dataset['x'][-1] if dataset['x'] else 0
+                new_x = last_x + 1 if isinstance(last_x, (int, float)) else 0
+                dataset['x'].append(new_x); dataset['y'].append(0)
+                dataset['colors'].append(dataset['primary_color'])
+                if len(dataset['x']) > 1: dataset['line_segment_colors'].append(dataset['primary_color'])
+        self.original_datasets = [ds.copy() for ds in self.datasets]
+        self.dataChanged.emit()
+
+    def remove_rows(self, rows_to_remove):
+        if not self.datasets: return
+        for row_index in sorted(rows_to_remove, reverse=True):
+            for dataset in self.datasets:
+                if 0 <= row_index < len(dataset['x']):
+                    del dataset['x'][row_index]; del dataset['y'][row_index]; del dataset['colors'][row_index]
+                    if row_index < len(dataset['line_segment_colors']): del dataset['line_segment_colors'][row_index]
+        self.original_datasets = [ds.copy() for ds in self.datasets]
+        self.dataChanged.emit()
+        
+    def move_row(self, from_index, to_index):
+        if not self.datasets or not (0 <= from_index < len(self.datasets[0]['x'])) or not (0 <= to_index < len(self.datasets[0]['x'])):
+            return
+        for dataset in self.datasets:
+            x=dataset['x'].pop(from_index); y=dataset['y'].pop(from_index); c=dataset['colors'].pop(from_index)
+            dataset['x'].insert(to_index, x); dataset['y'].insert(to_index, y); dataset['colors'].insert(to_index, c)
+        self.original_datasets = [ds.copy() for ds in self.datasets]
+        self.dataChanged.emit()
+
+    def clear_all_data(self):
+        self.datasets = []; self.original_datasets = []; self.excel_data = None
+        self.dataChanged.emit()
+
+    def sort_data(self, column_index, order):
+        if not self.datasets: return
+        
+        if column_index == 0: 
+            sort_key_data = self.datasets[0]['x']
+        else:
+            dataset_index = (column_index - 1) // 2
+            if dataset_index < len(self.datasets):
+                sort_key_data = self.datasets[dataset_index]['y']
+            else: return
+
+        try:
+            numeric_keys = pd.to_numeric(sort_key_data, errors='coerce')
+            is_numeric = pd.notna(numeric_keys)
+            numeric_part_indices = np.where(is_numeric)[0]
+            non_numeric_part_indices = np.where(~is_numeric)[0]
+            numeric_values = np.array(numeric_keys)[numeric_part_indices]
+            sorted_numeric_indices = numeric_part_indices[np.argsort(numeric_values)]
+
+            if order == Qt.DescendingOrder:
+                sorted_numeric_indices = sorted_numeric_indices[::-1]
+
+            sorted_indices = np.concatenate((sorted_numeric_indices, non_numeric_part_indices))
+        
+        except (ValueError, TypeError):
+            sorted_indices = np.argsort(sort_key_data)
+            if order == Qt.DescendingOrder:
+                sorted_indices = sorted_indices[::-1]
+
+        for ds in self.datasets:
+            ds['x'] = [ds['x'][i] for i in sorted_indices]
+            ds['y'] = [ds['y'][i] for i in sorted_indices]
+            ds['colors'] = [ds['colors'][i] for i in sorted_indices]
+        
+        self.dataChanged.emit()
+
+    def restore_original_order(self):
+        if self.original_datasets:
+            self.datasets = [ds.copy() for ds in self.original_datasets]
+            self.dataChanged.emit()
+        
+    def get_dataframe(self):
+        if not self.datasets: return pd.DataFrame()
+        data = {'X': self.datasets[0]['x']}
+        for ds in self.datasets: data[f"Y: {ds['name']}"] = ds['y']
+        return pd.DataFrame(data)
+
+class FileLoaderWorker(QRunnable):
+    class WorkerSignals(QObject):
+        finished = Signal(pd.DataFrame, str); error = Signal(str)
+    def __init__(self, filename):
+        super().__init__(); self.filename = filename; self.signals = self.WorkerSignals()
+    @Slot()
+    def run(self):
+        try:
+            file_ext = os.path.splitext(self.filename)[1].lower()
+            if file_ext in (".xlsx", ".xls"):
+                df = pd.read_excel(self.filename, engine="openpyxl" if file_ext == ".xlsx" else "xlrd")
+            elif file_ext == ".csv":
+                df = pd.read_csv(self.filename, encoding='utf-8', on_bad_lines='skip')
+            else: raise ValueError("不支援的檔案類型")
+            self.signals.finished.emit(df, self.filename)
+        except Exception as e: self.signals.error.emit(f"無法讀取檔案：{e}")
+
+class DataTableModel(QAbstractTableModel):
+    dataModified = Signal()
+    def __init__(self, data_manager, parent=None):
+        super().__init__(parent)
+        self.data_manager = data_manager
+        self.data_manager.dataChanged.connect(self.on_data_manager_changed)
+    def on_data_manager_changed(self): self.beginResetModel(); self.endResetModel()
+    def rowCount(self, parent=QModelIndex()):
+        if not self.data_manager.datasets: return 0
+        return len(self.data_manager.datasets[0]['x'])
+    def columnCount(self, parent=QModelIndex()):
+        if not self.data_manager.datasets: return 1 + len(self.data_manager.datasets) * 2
+        return 1 + len(self.data_manager.datasets) * 2
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid(): return None
+        row, col = index.row(), index.column()
+        if role == Qt.DisplayRole or role == Qt.EditRole:
+            if col == 0: return str(self.data_manager.datasets[0]['x'][row])
+            dataset_idx = (col - 1) // 2
+            if (col - 1) % 2 == 0: # Y data
+                return str(self.data_manager.datasets[dataset_idx]['y'][row])
+        if role == Qt.BackgroundRole and col > 0 and (col - 1) % 2 != 0:
+            dataset_idx = (col - 1) // 2
+            if row < len(self.data_manager.datasets[dataset_idx]['colors']):
+                return QColor(self.data_manager.datasets[dataset_idx]['colors'][row])
+        return None
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole: return None
+        if orientation == Qt.Horizontal:
+            if section == 0: return "X 數據"
+            dataset_idx = (section - 1) // 2
+            if (section - 1) % 2 == 0: return f"Y: {self.data_manager.datasets[dataset_idx]['name']}"
+            else: return "顏色"
+        return str(section + 1)
+    def setData(self, index, value, role=Qt.EditRole):
+        if role != Qt.EditRole: return False
+        row, col = index.row(), index.column()
+        if col > 0 and (col - 1) % 2 != 0: return False
+        try: numeric_value = float(value)
+        except ValueError: return False
+        if col == 0:
+            for ds in self.data_manager.datasets: ds['x'][row] = numeric_value
+        else:
+            dataset_idx = (col - 1) // 2
+            self.data_manager.datasets[dataset_idx]['y'][row] = numeric_value
+        self.dataChanged.emit(index, index)
+        self.dataModified.emit()
+        return True
+    def flags(self, index):
+        flags = super().flags(index)
+        if not (index.column() > 0 and (index.column() - 1) % 2 != 0):
+            flags |= Qt.ItemIsEditable
+        return flags
+
+class PlotManager(QObject):
+    artistSelected = Signal(dict)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.figure, self.ax = plt.subplots()
+        self.canvas = FigureCanvas(self.figure)
+        self.artists_map = {}; self.annotations = []; self.dragged_annotation = None
+        self.canvas.mpl_connect('button_press_event', self._on_press)
+        self.canvas.mpl_connect('button_release_event', self._on_release)
+        self.canvas.mpl_connect('motion_notify_event', self._on_motion)
+
+    def get_canvas(self): return self.canvas
+    
+    def save_figure(self, filename):
+        try: self.figure.savefig(filename, dpi=300, bbox_inches='tight'); return True, f"圖片已儲存至 {filename}"
+        except Exception as e: return False, f"儲存圖片失敗: {e}"
+
+    def update_plot(self, datasets, settings):
+        self.ax.clear(); self.annotations.clear(); self.artists_map.clear()
+        self.figure.set_facecolor(settings.get("bg_color_hex", "#FFFFFF"))
+        self.ax.set_facecolor(settings.get("bg_color_hex", "#FFFFFF"))
+
+        if not datasets: self.ax.set_title("請輸入或選擇數據以繪製圖表"); self.canvas.draw(); return
+        
+        for i, ds in enumerate(datasets):
+            x, y, c, n, p_color = ds['x'], ds['y'], ds['colors'], ds['name'], ds['primary_color']
+            
+            plot_x, plot_y = (np.linspace(min(x),max(x),300), PchipInterpolator(x,y)(np.linspace(min(x),max(x),300))) if settings.get("smooth_line_checkbox") and SCIPY_AVAILABLE and len(x)>3 and all(isinstance(v,(int,float)) for v in x+y) else (x,y)
+            if settings.get("line_checkbox"):
+                ls = {"實線":"-","虛線":"--","點虛線":"-.","點":":"}.get(settings.get("linestyle_combo"),'-')
+                line, = self.ax.plot(plot_x, plot_y, color=p_color, linewidth=settings.get("line_width_spinbox"), linestyle=ls, zorder=1, label=n)
+                self.artists_map[line] = {'type':'line', 'dataset_index':i, 'artist':line}
+            if settings.get("scatter_checkbox") or (settings.get("line_checkbox") and settings.get("marker_combo")!="無"):
+                marker = {"圓形":"o","方形":"s","三角形":"^","星形":"*","無":"None"}.get(settings.get("marker_combo"),'o')
+                if marker!="None":
+                    scatter = self.ax.scatter(x,y,s=settings.get("point_size_spinbox")**2,marker=marker,c=c,edgecolors=settings.get("border_color_hex"),linewidths=settings.get("border_width_spinbox"),zorder=2)
+                    self.artists_map[scatter] = {'type':'scatter', 'dataset_index':i, 'artist':scatter}
+            if settings.get("show_data_labels_checkbox"):
+                for j, (dx, dy, clr) in enumerate(zip(x, y, c)):
+                    label_text = f"({dx}, {dy})"; annot = self.ax.annotate(label_text, (dx, dy), textcoords="offset points", xytext=(0,10), ha='center', fontsize=settings.get("data_label_size_spinbox"), color=clr)
+                    self.annotations.append(annot)
+        
+        title_font = {'fontsize': settings.get("title_fontsize_spinbox"), 'fontweight': 'bold' if settings.get("title_bold_checkbox") else 'normal'}
+        self.ax.set_title(settings.get("title_input"), fontdict=title_font)
+        
+        label_font = {'fontsize': settings.get("label_fontsize_spinbox"), 'fontweight': 'bold' if settings.get("label_bold_checkbox") else 'normal'}
+        self.ax.set_xlabel(settings.get("x_label_input"), fontdict=label_font); self.ax.set_ylabel(settings.get("y_label_input"), fontdict=label_font)
+        
+        tick_dir_map = {'內': 'in', '外': 'out', '內外': 'inout'}
+        self.ax.tick_params(axis='x', which='major', direction=tick_dir_map.get(settings.get("x_major_tick_dir_combo")), length=settings.get("x_major_tick_len_spinbox"), width=settings.get("x_major_tick_width_spinbox"), labelsize=settings.get("x_tick_label_size_spinbox"))
+        self.ax.tick_params(axis='y', which='major', direction=tick_dir_map.get(settings.get("y_major_tick_dir_combo")), length=settings.get("y_major_tick_len_spinbox"), width=settings.get("y_major_tick_width_spinbox"), labelsize=settings.get("y_tick_label_size_spinbox"))
+
+        if settings.get("major_grid_checkbox"):
+            self.ax.grid(True, which='major', color=settings.get("major_grid_color_hex"), linestyle='-', linewidth=0.8)
+        if settings.get("minor_grid_checkbox"):
+            self.ax.minorticks_on()
+            self.ax.grid(True, which='minor', color=settings.get("minor_grid_color_hex"), linestyle='--', linewidth=0.5)
+        
+        if datasets and settings.get("legend_checkbox"):
+            self.ax.legend(title=settings.get("legend_title_input"), prop={'size':settings.get("legend_size_spinbox")})
+        
+        self.figure.tight_layout(); self.canvas.draw()
+
+    def _on_press(self, event):
+        if event.button != 1 or not event.inaxes: return
+        for ann in self.annotations:
+            if ann.contains(event)[0]: self.dragged_annotation = ann; return
+        for artist, info in self.artists_map.items():
+            if artist.contains(event)[0]: self.artistSelected.emit(info); return
+    def _on_release(self, event): self.dragged_annotation = None
+    def _on_motion(self, event):
+        if self.dragged_annotation and event.inaxes:
+            self.dragged_annotation.set_position((event.xdata, event.ydata)); self.canvas.draw_idle()
+
+class MainController(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("多功能繪圖工具 v4.3.1 (最終穩定版)"); self.setGeometry(50, 50, 1600, 900)
+        self.data_manager = DataManager(self); self.plot_manager = PlotManager(self); self.ui_manager = UIManager(self)
+        self.setCentralWidget(self.ui_manager); self._connect_signals(); self.ui_manager.settingsChanged.emit()
+
+    def _connect_signals(self):
+        dm, pm, ui = self.data_manager, self.plot_manager, self.ui_manager
+        ui.loadFileRequested.connect(dm.load_file_async)
+        dm.fileLoadFinished.connect(ui.on_file_load_success)
+        dm.fileLoadError.connect(lambda msg: QMessageBox.critical(self, "錯誤", msg))
+        ui.fileSelectionChanged.connect(dm.update_from_file_selection)
+        dm.dataChanged.connect(self.trigger_redraw)
+        ui.settingsChanged.connect(self.trigger_redraw)
+        ui.dataModified.connect(self.trigger_redraw)
+        pm.artistSelected.connect(ui.on_artist_selected)
+        ui.addRowRequested.connect(dm.add_row)
+        ui.removeRowsRequested.connect(dm.remove_rows)
+        ui.moveRowUpRequested.connect(lambda row: dm.move_row(row, row - 1))
+        ui.moveRowDownRequested.connect(lambda row: dm.move_row(row, row + 1))
+        ui.clearAllRequested.connect(dm.clear_all_data)
+        ui.saveSettingsRequested.connect(self.save_settings)
+        ui.loadSettingsRequested.connect(self.load_settings)
+        ui.savePlotRequested.connect(self.save_plot)
+        ui.saveDataRequested.connect(self.save_data)
+        ui.sortTableRequested.connect(dm.sort_data)
+        ui.restoreSortRequested.connect(dm.restore_original_order)
+        
+    def trigger_redraw(self): self.plot_manager.update_plot(self.data_manager.datasets, self.ui_manager.get_all_settings())
+    def save_settings(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "儲存設定", "", "JSON Files (*.json)")
+        if filename:
+            try:
+                with open(filename, 'w', encoding='utf-8') as f: json.dump(self.ui_manager.get_all_settings(), f, indent=4)
+            except Exception as e: QMessageBox.critical(self, "錯誤", f"無法儲存設定檔: {e}")
+    def load_settings(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "載入設定", "", "JSON Files (*.json)")
+        if filename:
+            try:
+                with open(filename, 'r', encoding='utf-8') as f: self.ui_manager.set_all_settings(json.load(f))
+            except Exception as e: QMessageBox.critical(self, "錯誤", f"無法載入設定檔: {e}")
+    def save_plot(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "儲存圖片", "", "PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)")
+        if filename:
+            success, message = self.plot_manager.save_figure(filename)
+            (QMessageBox.information if success else QMessageBox.critical)(self, "儲存狀態", message)
+    def save_data(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "儲存數據", "", "Excel Files (*.xlsx);;CSV Files (*.csv)")
+        if filename:
+            try:
+                df = self.data_manager.get_dataframe()
+                if filename.endswith('.xlsx'): df.to_excel(filename, index=False)
+                else: df.to_csv(filename, index=False, encoding='utf-8-sig')
+                QMessageBox.information(self, "成功", f"數據已儲存至 {filename}")
+            except Exception as e: QMessageBox.critical(self, "錯誤", f"儲存數據失敗: {e}")
+
+class UIManager(QWidget):
+    settingsChanged = Signal(); loadFileRequested = Signal(str); fileSelectionChanged = Signal(str, list)
+    addRowRequested = Signal(); removeRowsRequested = Signal(list); clearAllRequested = Signal()
+    saveSettingsRequested = Signal(); loadSettingsRequested = Signal(); savePlotRequested = Signal(); saveDataRequested = Signal()
+    moveRowUpRequested = Signal(int); moveRowDownRequested = Signal(int); dataModified = Signal()
+    sortTableRequested = Signal(int, Qt.SortOrder); restoreSortRequested = Signal()
+
+    def __init__(self, main_controller, parent=None):
+        super().__init__(parent)
+        self.main_controller = main_controller
+        self.plot_colors = {
+            "bg_color_hex": "#FFFFFF", "border_color_hex": "#000000",
+            "major_grid_color_hex": "#CCCCCC", "minor_grid_color_hex": "#EAEAEA",
+        }
+        self.settings_map = {}; self.highlighted_group = None; self.last_sort_info = {'col':-1, 'count':0}
+        self.groups = {}
+        self._init_ui(); self._create_settings_map(); self._connect_internal_signals()
+
+    def _init_ui(self):
+        main_layout = QHBoxLayout(self)
+        left_tabs = QTabWidget(); left_tabs.setFixedWidth(500); main_layout.addWidget(left_tabs)
+        # --- Data Tab ---
+        data_tab = QWidget(); data_layout = QVBoxLayout(data_tab)
+        file_box = QFrame(); file_box.setFrameShape(QFrame.StyledPanel); file_layout = QGridLayout(file_box)
+        self.load_file_btn = QPushButton("選擇檔案..."); self.x_col_combo = QComboBox(); self.y_col_list = QListWidget(); self.y_col_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        file_layout.addWidget(self.load_file_btn, 0, 0, 1, 2); file_layout.addWidget(QLabel("X 軸欄位:"), 1, 0); file_layout.addWidget(self.x_col_combo, 1, 1); file_layout.addWidget(QLabel("Y 軸欄位 (可多選):"), 2, 0, 1, 2); file_layout.addWidget(self.y_col_list, 3, 0, 1, 2); data_layout.addWidget(file_box)
+        table_box = QFrame(); table_box.setFrameShape(QFrame.StyledPanel); table_layout = QVBoxLayout(table_box)
+        filter_layout = QHBoxLayout(); self.filter_input = QLineEdit(); self.filter_input.setPlaceholderText("篩選表格內容...")
+        filter_layout.addWidget(QLabel("篩選:")); filter_layout.addWidget(self.filter_input); table_layout.addLayout(filter_layout)
+        self.table_view = QTableView(); self.table_model = DataTableModel(self.main_controller.data_manager); self.proxy_model = QSortFilterProxyModel(); self.proxy_model.setSourceModel(self.table_model)
+        self.table_view.setModel(self.proxy_model); self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table_view.setSortingEnabled(True)
+        table_layout.addWidget(self.table_view)
+        table_btn_layout = QHBoxLayout(); self.add_row_btn = QPushButton("增"); self.remove_row_btn = QPushButton("刪"); self.move_up_btn = QPushButton("上移"); self.move_down_btn = QPushButton("下移")
+        table_btn_layout.addWidget(self.add_row_btn); table_btn_layout.addWidget(self.remove_row_btn); table_btn_layout.addWidget(self.move_up_btn); table_btn_layout.addWidget(self.move_down_btn); table_layout.addLayout(table_btn_layout)
+        data_layout.addWidget(table_box, 1); left_tabs.addTab(data_tab, "數據")
+        
+        # --- Settings Tab (v3.2.1 Replica) ---
+        settings_scroll = QScrollArea(); settings_scroll.setWidgetResizable(True); settings_panel = QWidget(); self.plot_layout = QVBoxLayout(settings_panel); settings_scroll.setWidget(settings_panel)
+        pt_layout = QHBoxLayout(); self.line_checkbox=QCheckBox("折線圖"); self.scatter_checkbox=QCheckBox("散佈圖"); self.bar_checkbox=QCheckBox("長條圖"); self.box_checkbox=QCheckBox("盒鬚圖")
+        pt_layout.addWidget(self.line_checkbox); pt_layout.addWidget(self.scatter_checkbox); pt_layout.addWidget(self.bar_checkbox); pt_layout.addWidget(self.box_checkbox)
+        self.plot_layout.addWidget(self.create_collapsible_container("圖表類型", pt_layout, "plot_type_group"))
+        s_layout = QGridLayout(); self.title_input=QLineEdit(); self.title_fontsize_spinbox=QSpinBox(); self.title_bold_checkbox=QCheckBox("粗體"); self.x_label_input=QLineEdit(); self.y_label_input=QLineEdit(); self.label_fontsize_spinbox=QSpinBox(); self.label_bold_checkbox=QCheckBox("粗體")
+        s_layout.addWidget(QLabel("標題:"),0,0); s_layout.addWidget(self.title_input,0,1); s_layout.addWidget(self.title_fontsize_spinbox,0,2); s_layout.addWidget(self.title_bold_checkbox,0,3); s_layout.addWidget(QLabel("X/Y軸標籤:"),1,0); s_layout.addWidget(self.x_label_input,1,1); s_layout.addWidget(self.y_label_input,1,2); s_layout.addWidget(self.label_fontsize_spinbox,1,3); s_layout.addWidget(self.label_bold_checkbox,1,4)
+        self.plot_layout.addWidget(self.create_collapsible_container("圖表設定", s_layout, "settings_group"))
+        self.plot_color_container = QVBoxLayout()
+        self.plot_layout.addWidget(self.create_collapsible_container("數據顏色", self.plot_color_container, "color_group"))
+        ls_layout = QGridLayout(); self.line_width_spinbox = QDoubleSpinBox(); self.linestyle_combo = QComboBox(); self.linestyle_combo.addItems(["實線","虛線","點虛線","點"]); self.smooth_line_checkbox=QCheckBox("平滑化曲線")
+        ls_layout.addWidget(QLabel("線寬:"),0,0); ls_layout.addWidget(self.line_width_spinbox,0,1); ls_layout.addWidget(QLabel("線型:"),1,0); ls_layout.addWidget(self.linestyle_combo,1,1); ls_layout.addWidget(self.smooth_line_checkbox,2,0)
+        self.plot_layout.addWidget(self.create_collapsible_container("折線圖設定", ls_layout, "line_settings_group"))
+        sc_layout = QGridLayout(); self.point_size_spinbox=QSpinBox(); self.marker_combo=QComboBox(); self.marker_combo.addItems(["圓形","方形","三角形","星形","無"]); self.border_width_spinbox=QDoubleSpinBox(); self.border_color_btn=QPushButton("邊框顏色")
+        sc_layout.addWidget(QLabel("點大小:"),0,0); sc_layout.addWidget(self.point_size_spinbox,0,1); sc_layout.addWidget(QLabel("標記:"),1,0); sc_layout.addWidget(self.marker_combo,1,1); sc_layout.addWidget(QLabel("邊框寬度:"),2,0); sc_layout.addWidget(self.border_width_spinbox,2,1); sc_layout.addWidget(self.border_color_btn,3,0,1,2)
+        self.plot_layout.addWidget(self.create_collapsible_container("散佈圖設定", sc_layout, "scatter_settings_group"))
+        leg_layout = QGridLayout(); self.legend_checkbox=QCheckBox("顯示"); self.legend_title_input=QLineEdit(); self.legend_size_spinbox=QSpinBox()
+        leg_layout.addWidget(self.legend_checkbox,0,0); leg_layout.addWidget(QLabel("標題:"),1,0); leg_layout.addWidget(self.legend_title_input,1,1); leg_layout.addWidget(QLabel("字體大小:"),2,0); leg_layout.addWidget(self.legend_size_spinbox,2,1)
+        self.plot_layout.addWidget(self.create_collapsible_container("圖例設定", leg_layout, "legend_settings_group"))
+        grid_layout = QGridLayout(); self.major_grid_checkbox=QCheckBox("主網格"); self.minor_grid_checkbox=QCheckBox("次網格"); self.major_grid_color_btn=QPushButton("主網格顏色"); self.minor_grid_color_btn=QPushButton("次網格顏色")
+        grid_layout.addWidget(self.major_grid_checkbox,0,0); grid_layout.addWidget(self.major_grid_color_btn,0,1); grid_layout.addWidget(self.minor_grid_checkbox,1,0); grid_layout.addWidget(self.minor_grid_color_btn,1,1)
+        self.plot_layout.addWidget(self.create_collapsible_container("網格線設定", grid_layout, "grid_settings_group"))
+        tick_layout = QGridLayout(); self.x_tick_label_size_spinbox=QSpinBox(); self.y_tick_label_size_spinbox=QSpinBox(); self.x_major_tick_len_spinbox=QSpinBox(); self.x_major_tick_width_spinbox=QDoubleSpinBox(); self.x_major_tick_dir_combo=QComboBox(); self.x_major_tick_dir_combo.addItems(['內','外','內外']); self.y_major_tick_len_spinbox=QSpinBox(); self.y_major_tick_width_spinbox=QDoubleSpinBox(); self.y_major_tick_dir_combo=QComboBox(); self.y_major_tick_dir_combo.addItems(['內','外','內外'])
+        tick_layout.addWidget(QLabel("X刻度標籤大小:"),0,0); tick_layout.addWidget(self.x_tick_label_size_spinbox,0,1); tick_layout.addWidget(QLabel("Y刻度標籤大小:"),0,2); tick_layout.addWidget(self.y_tick_label_size_spinbox,0,3);
+        tick_layout.addWidget(QLabel("X主刻度長/寬/方向:"),1,0); tick_layout.addWidget(self.x_major_tick_len_spinbox,1,1); tick_layout.addWidget(self.x_major_tick_width_spinbox,1,2); tick_layout.addWidget(self.x_major_tick_dir_combo,1,3);
+        tick_layout.addWidget(QLabel("Y主刻度長/寬/方向:"),2,0); tick_layout.addWidget(self.y_major_tick_len_spinbox,2,1); tick_layout.addWidget(self.y_major_tick_width_spinbox,2,2); tick_layout.addWidget(self.y_major_tick_dir_combo,2,3);
+        self.plot_layout.addWidget(self.create_collapsible_container("刻度設定", tick_layout, "tick_settings_group"))
+        dl_layout = QGridLayout(); self.show_data_labels_checkbox=QCheckBox("顯示"); self.data_label_size_spinbox=QSpinBox()
+        dl_layout.addWidget(self.show_data_labels_checkbox,0,0); dl_layout.addWidget(QLabel("字體大小:"),1,0); dl_layout.addWidget(self.data_label_size_spinbox,1,1);
+        self.plot_layout.addWidget(self.create_collapsible_container("數據標籤設定", dl_layout, "data_label_settings_group"))
+        btn_layout = QGridLayout(); self.clear_plot_btn = QPushButton("清除圖表"); self.save_settings_btn=QPushButton("存設定"); self.load_settings_btn=QPushButton("讀設定"); self.save_plot_btn=QPushButton("存圖片"); self.save_data_btn = QPushButton("存數據")
+        btn_layout.addWidget(self.clear_plot_btn,0,0); btn_layout.addWidget(self.save_plot_btn,0,1); btn_layout.addWidget(self.save_data_btn,1,0); btn_layout.addWidget(self.save_settings_btn,2,0); btn_layout.addWidget(self.load_settings_btn,2,1)
+        self.plot_layout.addLayout(btn_layout)
+        self.plot_layout.addStretch(1)
+        left_tabs.addTab(settings_scroll, "繪圖設定")
+        plot_area_widget = QWidget(); plot_area_layout = QVBoxLayout(plot_area_widget); canvas = self.main_controller.plot_manager.get_canvas(); toolbar = NavigationToolbar2QT(canvas, plot_area_widget)
+        plot_area_layout.addWidget(toolbar); plot_area_layout.addWidget(canvas); main_layout.addWidget(plot_area_widget, 1)
+
+    def create_collapsible_container(self, title, layout, group_name=None):
+        container = QFrame(); container.setFrameShape(QFrame.StyledPanel); main_layout = QVBoxLayout(container); main_layout.setContentsMargins(5,5,5,5)
+        toggle_button = QPushButton(title); toggle_button.setCheckable(True); toggle_button.setChecked(True); toggle_button.setStyleSheet("text-align: left;")
+        content_widget = QWidget()
+        if isinstance(layout, QLayout): content_widget.setLayout(layout)
+        toggle_button.toggled.connect(content_widget.setVisible)
+        main_layout.addWidget(toggle_button); main_layout.addWidget(content_widget)
+        if group_name: self.groups[group_name] = container
+        return container
+
+    def _create_settings_map(self):
+        self.settings_map = {
+            "line_checkbox": (self.line_checkbox, "isChecked", bool), "scatter_checkbox": (self.scatter_checkbox, "isChecked", bool), "bar_checkbox": (self.bar_checkbox, "isChecked", bool), "box_checkbox": (self.box_checkbox, "isChecked", bool),
+            "title_input": (self.title_input, "text", str), "title_fontsize_spinbox": (self.title_fontsize_spinbox, "value", int), "title_bold_checkbox": (self.title_bold_checkbox, "isChecked", bool),
+            "x_label_input": (self.x_label_input, "text", str), "y_label_input": (self.y_label_input, "text", str), "label_fontsize_spinbox": (self.label_fontsize_spinbox, "value", int), "label_bold_checkbox": (self.label_bold_checkbox, "isChecked", bool),
+            "line_width_spinbox": (self.line_width_spinbox, "value", float), "linestyle_combo": (self.linestyle_combo, "currentText", str), "smooth_line_checkbox": (self.smooth_line_checkbox, "isChecked", bool),
+            "point_size_spinbox": (self.point_size_spinbox, "value", int), "marker_combo": (self.marker_combo, "currentText", str), "border_width_spinbox": (self.border_width_spinbox, "value", float),
+            "legend_checkbox": (self.legend_checkbox, "isChecked", bool), "legend_title_input": (self.legend_title_input, "text", str), "legend_size_spinbox": (self.legend_size_spinbox, "value", int),
+            "major_grid_checkbox": (self.major_grid_checkbox, "isChecked", bool), "minor_grid_checkbox": (self.minor_grid_checkbox, "isChecked", bool),
+            "x_tick_label_size_spinbox": (self.x_tick_label_size_spinbox, "value", int), "y_tick_label_size_spinbox": (self.y_tick_label_size_spinbox, "value", int),
+            "x_major_tick_len_spinbox": (self.x_major_tick_len_spinbox, "value", int), "x_major_tick_width_spinbox": (self.x_major_tick_width_spinbox, "value", float), "x_major_tick_dir_combo": (self.x_major_tick_dir_combo, "currentText", str),
+            "y_major_tick_len_spinbox": (self.y_major_tick_len_spinbox, "value", int), "y_major_tick_width_spinbox": (self.y_major_tick_width_spinbox, "value", float), "y_major_tick_dir_combo": (self.y_major_tick_dir_combo, "currentText", str),
+            "show_data_labels_checkbox": (self.show_data_labels_checkbox, "isChecked", bool), "data_label_size_spinbox": (self.data_label_size_spinbox, "value", int),
+        }
+
+    def _connect_internal_signals(self):
+        self.table_view.horizontalHeader().sortIndicatorChanged.connect(self._on_table_sort)
+        self.table_model.dataModified.connect(self.dataModified.emit)
+        self.filter_input.textChanged.connect(self.proxy_model.setFilterRegularExpression)
+        self.load_file_btn.clicked.connect(self._on_load_file_clicked)
+        self.x_col_combo.currentIndexChanged.connect(self._on_file_selection_changed)
+        self.y_col_list.itemSelectionChanged.connect(self._on_file_selection_changed)
+        self.add_row_btn.clicked.connect(self.addRowRequested.emit)
+        self.remove_row_btn.clicked.connect(self._on_remove_rows_clicked)
+        self.move_up_btn.clicked.connect(self._on_move_row_up)
+        self.move_down_btn.clicked.connect(self._on_move_row_down)
+        self.clear_plot_btn.clicked.connect(self.clearAllRequested.emit)
+        self.save_settings_btn.clicked.connect(self.saveSettingsRequested.emit)
+        self.load_settings_btn.clicked.connect(self.loadSettingsRequested.emit)
+        self.save_plot_btn.clicked.connect(self.savePlotRequested.emit)
+        self.save_data_btn.clicked.connect(self.saveDataRequested.emit)
+        self.border_color_btn.clicked.connect(lambda: self._choose_color("border_color_hex", self.border_color_btn))
+        self.major_grid_color_btn.clicked.connect(lambda: self._choose_color("major_grid_color_hex", self.major_grid_color_btn))
+        self.minor_grid_color_btn.clicked.connect(lambda: self._choose_color("minor_grid_color_hex", self.minor_grid_color_btn))
+        
+        for widget, prop, _ in self.settings_map.values():
+            if isinstance(widget, QLineEdit): widget.textChanged.connect(self.settingsChanged.emit)
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)): widget.valueChanged.connect(lambda val, w=widget: self.settingsChanged.emit())
+            elif isinstance(widget, QCheckBox): widget.toggled.connect(self.settingsChanged.emit)
+            elif isinstance(widget, QComboBox): widget.currentTextChanged.connect(self.settingsChanged.emit)
+
+    def get_all_settings(self):
+        s = {k: t(getattr(w, p)()) for k,(w,p,t) in self.settings_map.items()}; s.update(self.plot_colors); return s
+    def set_all_settings(self, settings):
+        for k,(w,p,_) in self.settings_map.items():
+            if k in settings:
+                setter = f"set{p[0].upper()}{p[1:]}"; getattr(w,setter)(settings[k]) if hasattr(w,setter) else (w.setCurrentText(settings[k]) if isinstance(w,QComboBox) else None)
+        self.plot_colors.clear()
+        for k,v in settings.items():
+            if k.startswith("plot_color_") or k.endswith("_hex"): self.plot_colors[k] = v
+        self._update_color_buttons(); self.settingsChanged.emit()
+
+    def _choose_color(self, key, button, index=None):
+        full_key = f"plot_color_{index}" if index is not None else key
+        color = QColorDialog.getColor(QColor(self.plot_colors.get(full_key, "#FFFFFF")), self)
+        if color.isValid(): self.plot_colors[full_key]=color.name(); button.setStyleSheet(f"background-color:{color.name()}"); self.settingsChanged.emit()
+
+    def _update_color_buttons(self):
+        while self.plot_color_container.count():
+            item=self.plot_color_container.takeAt(0); w=item.widget(); w.deleteLater() if w else None
+        for i,ds in enumerate(self.main_controller.data_manager.datasets):
+            btn=QPushButton(f"{ds['name']} 顏色"); key=f"plot_color_{i}"; self.plot_colors.setdefault(key, ds['primary_color'])
+            btn.setStyleSheet(f"background-color: {self.plot_colors[key]};")
+            btn.clicked.connect(lambda c=False,idx=i,b=btn:self._choose_color(None,b,idx)); self.plot_color_container.addWidget(btn)
+        self.border_color_btn.setStyleSheet(f"background-color: {self.plot_colors.get('border_color_hex', '#000000')};")
+        self.major_grid_color_btn.setStyleSheet(f"background-color: {self.plot_colors.get('major_grid_color_hex', '#CCCCCC')};")
+        self.minor_grid_color_btn.setStyleSheet(f"background-color: {self.plot_colors.get('minor_grid_color_hex', '#EAEAEA')};")
+
+    def _highlight_group(self, group_key):
+        if self.highlighted_group: self.highlighted_group.setStyleSheet("")
+        if group_key and group_key in self.groups:
+            self.groups[group_key].setStyleSheet("QFrame { border: 2px solid #0078D7; }")
+            self.highlighted_group = self.groups[group_key]
+    
+    @Slot()
+    def _on_load_file_clicked(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "選擇檔案", "", "Data Files (*.xlsx *.xls *.csv)")
+        if filename: self.loadFileRequested.emit(filename)
+            
+    @Slot()
+    def _on_file_selection_changed(self):
+        x=self.x_col_combo.currentText(); y=[i.text() for i in self.y_col_list.selectedItems()]
+        self.fileSelectionChanged.emit(x,y); self._update_color_buttons()
+
+    @Slot(list)
+    def on_file_load_success(self, cols):
+        self.x_col_combo.blockSignals(True); self.y_col_list.blockSignals(True)
+        self.x_col_combo.clear(); self.y_col_list.clear()
+        self.x_col_combo.addItems(cols); self.y_col_list.addItems(cols)
+        if len(cols) >= 2: self.x_col_combo.setCurrentIndex(0); self.y_col_list.item(1).setSelected(True)
+        self.x_col_combo.blockSignals(False); self.y_col_list.blockSignals(False); self._on_file_selection_changed()
+
+    def _on_table_sort(self, column, order):
+        if self.last_sort_info['col'] == column: self.last_sort_info['count'] += 1
+        else: self.last_sort_info = {'col': column, 'count': 1}
+        if self.last_sort_info['count'] % 3 == 0:
+            self.table_view.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+            self.restoreSortRequested.emit()
+            self.last_sort_info = {'col': -1, 'count': 0}
+        else:
+            self.sortTableRequested.emit(column, order)
+
+    def _get_selected_source_row(self):
+        idx = self.table_view.selectedIndexes()
+        return self.proxy_model.mapToSource(idx[0]).row() if idx else -1
+    @Slot()
+    def _on_remove_rows_clicked(self):
+        rows=sorted(list(set(self.proxy_model.mapToSource(i).row() for i in self.table_view.selectedIndexes())))
+        if rows: self.removeRowsRequested.emit(rows)
+    @Slot()
+    def _on_move_row_up(self):
+        row = self._get_selected_source_row(); self.moveRowUpRequested.emit(row) if row > 0 else None
+    @Slot()
+    def _on_move_row_down(self):
+        row = self._get_selected_source_row()
+        if 0 <= row < self.table_model.rowCount() - 1: self.moveRowDownRequested.emit(row)
+    @Slot(dict)
+    def on_artist_selected(self, info):
+        # ... implementation to highlight and update settings ...
+        pass
+
+if __name__ == '__main__':
+    def set_matplotlib_font():
+        try:
+            font_path = "C:/Windows/Fonts/msyh.ttc" if sys.platform=="win32" else "/System/Library/Fonts/PingFang.ttc"
+            if os.path.exists(font_path): plt.rcParams['font.sans-serif'] = [fm.FontProperties(fname=font_path).get_name()]
+            plt.rcParams['axes.unicode_minus'] = False
+        except Exception as e: print(f"設定字體時發生錯誤: {e}")
+    set_matplotlib_font()
+    app = QApplication(sys.argv)
+    main_window = MainController()
+    main_window.show()
+    sys.exit(app.exec())
+
