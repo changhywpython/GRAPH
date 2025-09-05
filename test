@@ -5,7 +5,7 @@ import json
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget,
                              QFileDialog, QPushButton, QComboBox, QLineEdit, QGridLayout,
                              QGroupBox, QColorDialog, QCheckBox, QSlider, QLabel, QSplitter,
-                             QHeaderView, QAbstractItemView, QMenu, QMessageBox, QHBoxLayout) # <-- 修正 1：加入了 QHBoxLayout
+                             QHeaderView, QAbstractItemView, QMenu, QMessageBox, QHBoxLayout)
 from PySide6.QtGui import QColor, QStandardItem, QAction
 from PySide6.QtCore import (Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, 
                           QObject, Signal, QThread, Slot)
@@ -213,10 +213,6 @@ class UIManager(QMainWindow):
         self.setWindowTitle("多功能繪圖工具 v1.0")
         self.setGeometry(100, 100, 1400, 800)
 
-        # 建立主佈局和元件
-        main_widget = QWidget()
-        # main_layout = QHBoxLayout(main_widget) # 這行其實不需要，因為 setCentralWidget 會接管
-
         # 右側控制面板和繪圖區域
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
@@ -291,7 +287,7 @@ class UIManager(QMainWindow):
         controls_layout.addLayout(slider_layout, 7, 0, 1, 3)
 
         # 勾選框佈局
-        checkbox_layout = QHBoxLayout() # <-- 修正 2：修正拼寫錯誤
+        checkbox_layout = QHBoxLayout()
         checkbox_layout.addWidget(self.grid_checkbox)
         checkbox_layout.addWidget(self.legend_checkbox)
         checkbox_layout.addWidget(self.smooth_checkbox)
@@ -337,7 +333,7 @@ class UIManager(QMainWindow):
     def add_y_axis_selector(self, columns, selected_col=None):
         """動態新增一個Y軸選擇器"""
         selector_widget = QWidget()
-        layout = QHBoxLayout(selector_widget) # <-- 修正 3：修正拼寫錯誤
+        layout = QHBoxLayout(selector_widget)
         layout.setContentsMargins(0,0,0,0)
         
         combo = QComboBox()
@@ -402,13 +398,15 @@ class MainController(QObject):
         self.data_manager = data_manager
         self.ui_manager = ui_manager
         
-        self._connect_signals()
-        
-        # 建立數據模型
+        # --- 關鍵修正：調整初始化順序 ---
+        # 1. 先建立數據模型並將其設定到 View
         self.table_model = PandasModel(self.data_manager.get_data())
         self.proxy_model = QSortFilterProxyModel()
         self.proxy_model.setSourceModel(self.table_model)
         self.ui_manager.table_view.setModel(self.proxy_model)
+        
+        # 2. 然後才連接所有信號
+        self._connect_signals()
 
     def _connect_signals(self):
         """連接所有信號和槽"""
