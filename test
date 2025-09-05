@@ -199,7 +199,6 @@ class PlottingModel(QObject):
         self.settings = self._get_default_settings()
         self.data_changed.emit()
         self.settings_changed.emit()
-
     def update_setting(self, key, value):
         """更新單一設定值"""
         if key in self.settings and self.settings[key] != value:
