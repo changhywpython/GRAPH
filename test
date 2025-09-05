@@ -1,0 +1,733 @@
+import sys
+import pandas as pd
+import numpy as np
+import json
+from PySide6.QtWidgets import (QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget,
+                             QFileDialog, QPushButton, QComboBox, QLineEdit, QGridLayout,
+                             QGroupBox, QColorDialog, QCheckBox, QSlider, QLabel, QSplitter,
+                             QHeaderView, QAbstractItemView, QMenu, QMessageBox)
+from PySide6.QtGui import QColor, QStandardItemModel, QStandardItem, QIcon, QAction
+from PySide6.QtCore import (Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, 
+                          QObject, Signal, QThread, Slot)
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
+
+# 嘗試匯入 scipy，如果不存在則無法使用平滑化功能
+try:
+    from scipy.interpolate import make_interp_spline
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
+#================================================================================
+# Model: 負責數據管理
+#================================================================================
+class DataManager(QObject):
+    """
+    管理所有應用程式數據，包括載入、儲存和操作。
+    """
+    dataChanged = Signal(pd.DataFrame)
+    loadError = Signal(str)
+    loadSuccess = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.df = pd.DataFrame()
+
+    def load_data(self, file_path):
+        """根據檔案類型載入數據"""
+        try:
+            if file_path.endswith('.csv'):
+                self.df = pd.read_csv(file_path)
+            elif file_path.endswith(('.xlsx', '.xls')):
+                self.df = pd.read_excel(file_path)
+            else:
+                raise ValueError("不支援的檔案格式")
+            
+            # 將所有欄位轉換為字串以利顯示
+            for col in self.df.columns:
+                self.df[col] = self.df[col].astype(str)
+
+            self.loadSuccess.emit(f"成功載入檔案: {file_path}")
+            self.dataChanged.emit(self.df)
+        except Exception as e:
+            self.loadError.emit(f"載入檔案失敗: {e}")
+            self.df = pd.DataFrame() # 載入失敗時清空數據
+            self.dataChanged.emit(self.df)
+
+    def get_data(self):
+        """獲取當前的 DataFrame"""
+        return self.df
+
+    def get_columns(self):
+        """獲取欄位名稱列表"""
+        return self.df.columns.tolist()
+
+    def add_row(self):
+        """新增一個空行"""
+        if not self.df.empty:
+            new_row = pd.DataFrame([[''] * len(self.df.columns)], columns=self.df.columns)
+            self.df = pd.concat([self.df, new_row], ignore_index=True)
+            self.dataChanged.emit(self.df)
+
+    def remove_row(self, index):
+        """刪除指定行"""
+        if not self.df.empty and 0 <= index < len(self.df):
+            self.df = self.df.drop(self.df.index[index]).reset_index(drop=True)
+            self.dataChanged.emit(self.df)
+
+    def move_row_up(self, index):
+        """上移指定行"""
+        if index > 0 and not self.df.empty:
+            a, b = self.df.index[index], self.df.index[index-1]
+            self.df.iloc[a], self.df.iloc[b] = self.df.iloc[b].copy(), self.df.iloc[a].copy()
+            self.dataChanged.emit(self.df)
+            return index - 1
+        return index
+
+    def move_row_down(self, index):
+        """下移指定行"""
+        if index < len(self.df) - 1 and not self.df.empty:
+            a, b = self.df.index[index], self.df.index[index+1]
+            self.df.iloc[a], self.df.iloc[b] = self.df.iloc[b].copy(), self.df.iloc[a].copy()
+            self.dataChanged.emit(self.df)
+            return index + 1
+        return index
+        
+    def update_cell_data(self, row, col, value):
+        """更新儲存格數據"""
+        if 0 <= row < len(self.df) and 0 <= col < len(self.df.columns):
+            self.df.iloc[row, col] = value
+            # 注意：這裡不發射 dataChanged 信號，避免每次編輯都重繪
+            # 由 TableModel 直接處理
+
+#================================================================================
+# View: 負責 UI 顯示，包含主視窗和繪圖區域
+#================================================================================
+class PlotManager:
+    """
+    管理 Matplotlib 圖表的建立和更新。
+    """
+    def __init__(self):
+        plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei'] 
+        plt.rcParams['axes.unicode_minus'] = False 
+
+        self.figure = Figure(figsize=(8, 6))
+        self.canvas = FigureCanvas(self.figure)
+        self.ax = self.figure.add_subplot(111)
+        
+        # 將 canvas 放入一個佈局中，方便管理
+        self.layout = QVBoxLayout()
+        self.layout.addWidget(self.canvas)
+        
+    def plot(self, df, settings):
+        """根據提供的數據和設定來繪圖"""
+        self.ax.clear()
+
+        if df.empty or settings['x_axis'] not in df.columns or not settings['y_axes']:
+            self.ax.text(0.5, 0.5, '請選擇有效的 X 軸和 Y 軸數據', horizontalalignment='center', verticalalignment='center')
+            self.canvas.draw()
+            return
+
+        x_col = settings['x_axis']
+        x_data = pd.to_numeric(df[x_col], errors='coerce').dropna()
+        
+        for y_info in settings['y_axes']:
+            y_col = y_info['name']
+            if y_col not in df.columns:
+                continue
+
+            y_data_series = pd.to_numeric(df[y_col], errors='coerce')
+            
+            # 合併x和y，並去除有NaN的行，確保x和y對應
+            temp_df = pd.DataFrame({'x': x_data, 'y': y_data_series}).dropna()
+
+            if temp_df.empty:
+                continue
+
+            current_x = temp_df['x']
+            current_y = temp_df['y']
+
+            plot_args = {
+                'label': y_col,
+                'color': y_info['color'],
+                'linewidth': settings.get('line_width', 1.5),
+                'linestyle': y_info.get('style', '-')
+            }
+
+            if settings.get('plot_type', 'line') == 'scatter':
+                plot_args['marker'] = 'o'
+                plot_args.pop('linewidth', None) # 散點圖不需要線寬
+                self.ax.scatter(current_x, current_y, **plot_args)
+            else: # 折線圖
+                # 處理平滑化
+                if settings.get('smooth', False) and SCIPY_AVAILABLE and len(current_x) > 3:
+                    try:
+                        x_new = np.linspace(current_x.min(), current_x.max(), 300)
+                        spl = make_interp_spline(current_x, current_y, k=3)
+                        y_smooth = spl(x_new)
+                        self.ax.plot(x_new, y_smooth, **plot_args)
+                    except:
+                        # 平滑化失敗則繪製原始折線
+                        self.ax.plot(current_x, current_y, **plot_args)
+                else:
+                    self.ax.plot(current_x, current_y, **plot_args)
+
+        # 設定圖表外觀
+        self.ax.set_title(settings.get('title', '圖表'), fontsize=settings.get('title_fontsize', 16))
+        self.ax.set_xlabel(settings.get('xlabel', x_col), fontsize=settings.get('label_fontsize', 12))
+        self.ax.set_ylabel(settings.get('ylabel', '值'), fontsize=settings.get('label_fontsize', 12))
+        self.ax.tick_params(axis='x', labelsize=settings.get('tick_fontsize', 10))
+        self.ax.tick_params(axis='y', labelsize=settings.get('tick_fontsize', 10))
+        
+        if settings.get('grid', True):
+            self.ax.grid(True, linestyle='--', alpha=0.6)
+            
+        if settings.get('legend', True) and any(y['name'] in df.columns for y in settings['y_axes']):
+            self.ax.legend()
+        
+        self.figure.tight_layout()
+        self.canvas.draw()
+        
+    def save_figure(self, file_path):
+        """儲存圖表"""
+        try:
+            self.figure.savefig(file_path, dpi=300)
+            return True
+        except Exception as e:
+            print(f"儲存圖表失敗: {e}")
+            return False
+
+class UIManager(QMainWindow):
+    """
+    管理所有 UI 元件的建立和佈局。
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.plot_manager = PlotManager() # 建立 PlotManager 實例
+        self.setup_ui()
+
+    def setup_ui(self):
+        """設定使用者介面"""
+        self.setWindowTitle("多功能繪圖工具 v1.0")
+        self.setGeometry(100, 100, 1400, 800)
+
+        # 右側控制面板和繪圖區域
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+
+        # --- 控制面板 ---
+        controls_group = QGroupBox("控制面板")
+        controls_layout = QGridLayout()
+        
+        # 元件宣告
+        self.x_axis_combo = QComboBox()
+        self.y_axis_list = QWidget() # 用於動態新增Y軸選項
+        self.y_axis_list_layout = QVBoxLayout(self.y_axis_list)
+        self.add_y_axis_btn = QPushButton("新增 Y 軸")
+        
+        self.plot_type_combo = QComboBox()
+        self.plot_type_combo.addItems(["line", "scatter"])
+        
+        self.title_input = QLineEdit("圖表標題")
+        self.xlabel_input = QLineEdit("X 軸標籤")
+        self.ylabel_input = QLineEdit("Y 軸標籤")
+        
+        self.title_fontsize_slider = QSlider(Qt.Horizontal)
+        self.label_fontsize_slider = QSlider(Qt.Horizontal)
+        self.tick_fontsize_slider = QSlider(Qt.Horizontal)
+        self.linewidth_slider = QSlider(Qt.Horizontal)
+        
+        for slider in [self.title_fontsize_slider, self.label_fontsize_slider, self.tick_fontsize_slider]:
+            slider.setRange(8, 30)
+        self.linewidth_slider.setRange(1, 10)
+
+        self.grid_checkbox = QCheckBox("顯示網格")
+        self.grid_checkbox.setChecked(True)
+        self.legend_checkbox = QCheckBox("顯示圖例")
+        self.legend_checkbox.setChecked(True)
+        self.smooth_checkbox = QCheckBox("平滑化曲線")
+        self.smooth_checkbox.setEnabled(SCIPY_AVAILABLE)
+
+        self.update_plot_btn = QPushButton("更新圖表")
+        self.save_plot_btn = QPushButton("匯出圖表")
+        self.save_data_btn = QPushButton("匯出數據")
+        self.load_template_btn = QPushButton("載入範本")
+        self.save_template_btn = QPushButton("儲存範本")
+        self.load_file_btn = QPushButton("載入檔案")
+
+        # 佈局
+        controls_layout.addWidget(QLabel("X軸:"), 0, 0)
+        controls_layout.addWidget(self.x_axis_combo, 0, 1, 1, 2)
+        controls_layout.addWidget(self.y_axis_list, 1, 0, 1, 3)
+        controls_layout.addWidget(self.add_y_axis_btn, 2, 0, 1, 3)
+
+        controls_layout.addWidget(QLabel("圖表類型:"), 3, 0)
+        controls_layout.addWidget(self.plot_type_combo, 3, 1, 1, 2)
+        
+        controls_layout.addWidget(QLabel("標題:"), 4, 0)
+        controls_layout.addWidget(self.title_input, 4, 1, 1, 2)
+        controls_layout.addWidget(QLabel("X軸標籤:"), 5, 0)
+        controls_layout.addWidget(self.xlabel_input, 5, 1, 1, 2)
+        controls_layout.addWidget(QLabel("Y軸標籤:"), 6, 0)
+        controls_layout.addWidget(self.ylabel_input, 6, 1, 1, 2)
+        
+        # 滑塊佈局
+        slider_layout = QGridLayout()
+        slider_layout.addWidget(QLabel("標題字體:"), 0, 0)
+        slider_layout.addWidget(self.title_fontsize_slider, 0, 1)
+        slider_layout.addWidget(QLabel("標籤字體:"), 1, 0)
+        slider_layout.addWidget(self.label_fontsize_slider, 1, 1)
+        slider_layout.addWidget(QLabel("刻度字體:"), 2, 0)
+        slider_layout.addWidget(self.tick_fontsize_slider, 2, 1)
+        slider_layout.addWidget(QLabel("線條寬度:"), 3, 0)
+        slider_layout.addWidget(self.linewidth_slider, 3, 1)
+        
+        controls_layout.addLayout(slider_layout, 7, 0, 1, 3)
+
+        # 勾選框佈局
+        checkbox_layout = QHBoxLayout()
+        checkbox_layout.addWidget(self.grid_checkbox)
+        checkbox_layout.addWidget(self.legend_checkbox)
+        checkbox_layout.addWidget(self.smooth_checkbox)
+        controls_layout.addLayout(checkbox_layout, 8, 0, 1, 3)
+        
+        # 按鈕佈局
+        button_layout = QGridLayout()
+        button_layout.addWidget(self.update_plot_btn, 0, 0)
+        button_layout.addWidget(self.save_plot_btn, 0, 1)
+        button_layout.addWidget(self.save_data_btn, 0, 2)
+        button_layout.addWidget(self.load_template_btn, 1, 0)
+        button_layout.addWidget(self.save_template_btn, 1, 1)
+        button_layout.addWidget(self.load_file_btn, 1, 2)
+
+        controls_layout.addLayout(button_layout, 9, 0, 1, 3)
+        
+        controls_group.setLayout(controls_layout)
+
+        # --- 組合右側介面 ---
+        right_layout.addWidget(controls_group)
+        right_layout.addLayout(self.plot_manager.layout) # 將繪圖區域的 layout 加入
+
+        # --- 表格視圖 ---
+        self.table_view = QTableView()
+        self.table_view.setSortingEnabled(True)
+        self.table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        
+        # --- 主分割器 (用來劃分表格和右側面板) ---
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.addWidget(self.table_view)
+        main_splitter.addWidget(right_widget)
+        
+        # --- 關鍵修復：設定分割器的初始大小，避免繪圖區被壓縮 ---
+        main_splitter.setSizes([600, 800])
+
+        self.setCentralWidget(main_splitter)
+
+        # --- 狀態列 ---
+        self.statusBar = self.statusBar()
+        self.status_label = QLabel("準備就緒")
+        self.statusBar.addWidget(self.status_label)
+
+    def add_y_axis_selector(self, columns, selected_col=None):
+        """動態新增一個Y軸選擇器"""
+        selector_widget = QWidget()
+        layout = QHBoxLayout(selector_widget)
+        layout.setContentsMargins(0,0,0,0)
+        
+        combo = QComboBox()
+        combo.addItems(columns)
+        if selected_col and selected_col in columns:
+            combo.setCurrentText(selected_col)
+            
+        color_btn = QPushButton()
+        color_btn.setFixedSize(24, 24)
+        initial_color = "#1f77b4" # 預設顏色
+        color_btn.setStyleSheet(f"background-color: {initial_color}; border: none;")
+        color_btn.setProperty("color", initial_color)
+
+        style_combo = QComboBox()
+        style_combo.addItems(['-', '--', '-.', ':']) # 實線, 虛線, 點劃線, 點線
+
+        remove_btn = QPushButton("X")
+        remove_btn.setFixedSize(24, 24)
+        
+        layout.addWidget(combo)
+        layout.addWidget(color_btn)
+        layout.addWidget(style_combo)
+        layout.addWidget(remove_btn)
+        
+        self.y_axis_list_layout.addWidget(selector_widget)
+
+        # 連接信號
+        color_btn.clicked.connect(lambda: self.select_color(color_btn))
+        remove_btn.clicked.connect(lambda: self.remove_y_axis_selector(selector_widget))
+        
+    def remove_y_axis_selector(self, widget):
+        """移除指定的Y軸選擇器"""
+        self.y_axis_list_layout.removeWidget(widget)
+        widget.deleteLater()
+        
+    def select_color(self, btn):
+        """打開顏色選擇對話框並設定按鈕顏色"""
+        color = QColorDialog.getColor()
+        if color.isValid():
+            hex_color = color.name()
+            btn.setStyleSheet(f"background-color: {hex_color}; border: none;")
+            btn.setProperty("color", hex_color)
+
+    def update_status(self, message):
+        """更新狀態列訊息"""
+        self.status_label.setText(message)
+
+    def show_error_message(self, message):
+        """顯示錯誤訊息對話框"""
+        QMessageBox.critical(self, "錯誤", message)
+
+#================================================================================
+# Controller: 負責連接 Model 和 View
+#================================================================================
+class MainController(QObject):
+    """
+    連接 DataManager (Model) 和 UIManager (View)。
+    處理使用者輸入和應用程式邏輯。
+    """
+    def __init__(self, data_manager, ui_manager):
+        super().__init__()
+        self.data_manager = data_manager
+        self.ui_manager = ui_manager
+        
+        self._connect_signals()
+        
+        # 建立數據模型
+        self.table_model = PandasModel(self.data_manager.get_data())
+        self.proxy_model = QSortFilterProxyModel()
+        self.proxy_model.setSourceModel(self.table_model)
+        self.ui_manager.table_view.setModel(self.proxy_model)
+
+    def _connect_signals(self):
+        """連接所有信號和槽"""
+        # Model -> Controller
+        self.data_manager.dataChanged.connect(self.on_data_changed)
+        self.data_manager.loadError.connect(self.ui_manager.show_error_message)
+        self.data_manager.loadSuccess.connect(self.ui_manager.update_status)
+
+        # View -> Controller
+        self.ui_manager.load_file_btn.clicked.connect(self.load_file)
+        self.ui_manager.update_plot_btn.clicked.connect(self.update_plot)
+        self.ui_manager.add_y_axis_btn.clicked.connect(self.add_y_axis)
+        self.ui_manager.save_plot_btn.clicked.connect(self.save_plot)
+        self.ui_manager.save_data_btn.clicked.connect(self.save_data)
+        self.ui_manager.load_template_btn.clicked.connect(self.load_template)
+        self.ui_manager.save_template_btn.clicked.connect(self.save_template)
+
+        # 表格右鍵選單
+        self.ui_manager.table_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.ui_manager.table_view.customContextMenuRequested.connect(self.show_table_context_menu)
+        
+        # 數據模型 -> Controller
+        self.table_model.dataChanged.connect(self.on_cell_data_changed)
+
+    def on_data_changed(self, new_df):
+        """當 Model 的數據更新時，刷新 View"""
+        # 更新表格視圖
+        self.table_model.update_data(new_df)
+        self.ui_manager.table_view.resizeColumnsToContents()
+        
+        # 更新下拉選單
+        columns = self.data_manager.get_columns()
+        
+        # 記錄目前選擇，以在更新後恢復
+        current_x = self.ui_manager.x_axis_combo.currentText()
+        
+        self.ui_manager.x_axis_combo.clear()
+        self.ui_manager.x_axis_combo.addItems(columns)
+        
+        if current_x in columns:
+            self.ui_manager.x_axis_combo.setCurrentText(current_x)
+            
+        # 更新 Y 軸選擇器中的選項
+        for i in range(self.ui_manager.y_axis_list_layout.count()):
+            widget = self.ui_manager.y_axis_list_layout.itemAt(i).widget()
+            if widget:
+                combo = widget.findChild(QComboBox)
+                if combo:
+                    current_y = combo.currentText()
+                    combo.clear()
+                    combo.addItems(columns)
+                    if current_y in columns:
+                        combo.setCurrentText(current_y)
+        
+        self.ui_manager.update_status("數據已更新")
+
+    def on_cell_data_changed(self, top_left, bottom_right):
+        """當表格數據被使用者編輯時，更新 Model"""
+        row = top_left.row()
+        col = top_left.column()
+        # 獲取 proxy model 的 index 對應的 source model index
+        source_index = self.proxy_model.mapToSource(top_left)
+        source_row = source_index.row()
+        source_col = source_index.column()
+        
+        # 從模型獲取新值
+        new_value = self.table_model.data(source_index, Qt.DisplayRole)
+        
+        # 更新 DataManager
+        self.data_manager.update_cell_data(source_row, source_col, new_value)
+
+    def load_file(self):
+        """處理檔案載入請求"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self.ui_manager, "選擇檔案", "", "Excel/CSV 檔案 (*.xlsx *.xls *.csv)"
+        )
+        if file_path:
+            self.ui_manager.update_status(f"正在載入: {file_path}...")
+            # 在背景執行緒中載入數據以避免UI凍結
+            self.worker = DataLoaderThread(self.data_manager, file_path)
+            self.worker.start()
+
+    def update_plot(self):
+        """收集 UI 設定並觸發繪圖"""
+        settings = self.get_plot_settings()
+        df = self.data_manager.get_data()
+        self.ui_manager.plot_manager.plot(df, settings)
+        self.ui_manager.update_status("圖表已更新")
+
+    def get_plot_settings(self):
+        """從 UI 元件收集所有繪圖設定"""
+        y_axes = []
+        for i in range(self.ui_manager.y_axis_list_layout.count()):
+            widget = self.ui_manager.y_axis_list_layout.itemAt(i).widget()
+            if widget:
+                combo = widget.findChild(QComboBox)
+                color_btn = widget.findChild(QPushButton) # 第一個 QPushButton 是顏色按鈕
+                style_combo = widget.findChildren(QComboBox)[1] # 第二個 QComboBox 是樣式
+                
+                if combo and color_btn:
+                    y_axes.append({
+                        'name': combo.currentText(),
+                        'color': color_btn.property("color"),
+                        'style': style_combo.currentText()
+                    })
+
+        settings = {
+            'x_axis': self.ui_manager.x_axis_combo.currentText(),
+            'y_axes': y_axes,
+            'plot_type': self.ui_manager.plot_type_combo.currentText(),
+            'title': self.ui_manager.title_input.text(),
+            'xlabel': self.ui_manager.xlabel_input.text(),
+            'ylabel': self.ui_manager.ylabel_input.text(),
+            'title_fontsize': self.ui_manager.title_fontsize_slider.value(),
+            'label_fontsize': self.ui_manager.label_fontsize_slider.value(),
+            'tick_fontsize': self.ui_manager.tick_fontsize_slider.value(),
+            'line_width': self.ui_manager.linewidth_slider.value(),
+            'grid': self.ui_manager.grid_checkbox.isChecked(),
+            'legend': self.ui_manager.legend_checkbox.isChecked(),
+            'smooth': self.ui_manager.smooth_checkbox.isChecked(),
+        }
+        return settings
+        
+    def set_plot_settings(self, settings):
+        """根據設定檔更新UI元件"""
+        self.ui_manager.x_axis_combo.setCurrentText(settings.get('x_axis', ''))
+        
+        # 清除舊的Y軸選擇器
+        while self.ui_manager.y_axis_list_layout.count() > 0:
+            item = self.ui_manager.y_axis_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        # 根據設定建立新的Y軸選擇器
+        columns = self.data_manager.get_columns()
+        for y_info in settings.get('y_axes', []):
+            self.ui_manager.add_y_axis_selector(columns, y_info.get('name'))
+            # 設定顏色和樣式
+            new_widget = self.ui_manager.y_axis_list_layout.itemAt(self.ui_manager.y_axis_list_layout.count() - 1).widget()
+            color_btn = new_widget.findChild(QPushButton)
+            hex_color = y_info.get('color', '#1f77b4')
+            color_btn.setStyleSheet(f"background-color: {hex_color}; border: none;")
+            color_btn.setProperty("color", hex_color)
+            style_combo = new_widget.findChildren(QComboBox)[1]
+            style_combo.setCurrentText(y_info.get('style', '-'))
+            
+        self.ui_manager.plot_type_combo.setCurrentText(settings.get('plot_type', 'line'))
+        self.ui_manager.title_input.setText(settings.get('title', ''))
+        self.ui_manager.xlabel_input.setText(settings.get('xlabel', ''))
+        self.ui_manager.ylabel_input.setText(settings.get('ylabel', ''))
+        self.ui_manager.title_fontsize_slider.setValue(settings.get('title_fontsize', 16))
+        self.ui_manager.label_fontsize_slider.setValue(settings.get('label_fontsize', 12))
+        self.ui_manager.tick_fontsize_slider.setValue(settings.get('tick_fontsize', 10))
+        self.ui_manager.linewidth_slider.setValue(settings.get('line_width', 1))
+        self.ui_manager.grid_checkbox.setChecked(settings.get('grid', True))
+        self.ui_manager.legend_checkbox.setChecked(settings.get('legend', True))
+        self.ui_manager.smooth_checkbox.setChecked(settings.get('smooth', False))
+
+
+    def add_y_axis(self):
+        """處理新增Y軸的請求"""
+        columns = self.data_manager.get_columns()
+        self.ui_manager.add_y_axis_selector(columns)
+        
+    def save_plot(self):
+        """儲存圖表到檔案"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self.ui_manager, "儲存圖表", "", "PNG 檔案 (*.png);;JPG 檔案 (*.jpg)"
+        )
+        if file_path:
+            if self.ui_manager.plot_manager.save_figure(file_path):
+                self.ui_manager.update_status(f"圖表已儲存至: {file_path}")
+            else:
+                self.ui_manager.show_error_message("儲存圖表失敗")
+                
+    def save_data(self):
+        """儲存數據到檔案"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self.ui_manager, "儲存數據", "", "Excel 檔案 (*.xlsx);;CSV 檔案 (*.csv)"
+        )
+        if file_path:
+            try:
+                df = self.data_manager.get_data()
+                if file_path.endswith('.csv'):
+                    df.to_csv(file_path, index=False)
+                elif file_path.endswith('.xlsx'):
+                    df.to_excel(file_path, index=False)
+                self.ui_manager.update_status(f"數據已儲存至: {file_path}")
+            except Exception as e:
+                self.ui_manager.show_error_message(f"儲存數據失敗: {e}")
+
+    def save_template(self):
+        """儲存目前圖表設定為範本"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self.ui_manager, "儲存設定範本", "", "JSON 檔案 (*.json)"
+        )
+        if file_path:
+            settings = self.get_plot_settings()
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(settings, f, ensure_ascii=False, indent=4)
+                self.ui_manager.update_status(f"範本已儲存: {file_path}")
+            except Exception as e:
+                self.ui_manager.show_error_message(f"儲存範本失敗: {e}")
+
+    def load_template(self):
+        """從檔案載入圖表設定範本"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self.ui_manager, "載入設定範本", "", "JSON 檔案 (*.json)"
+        )
+        if file_path:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                self.set_plot_settings(settings)
+                self.update_plot()
+                self.ui_manager.update_status(f"範本已載入: {file_path}")
+            except Exception as e:
+                self.ui_manager.show_error_message(f"載入範本失敗: {e}")
+                
+    def show_table_context_menu(self, pos):
+        """顯示表格的右鍵選單"""
+        menu = QMenu()
+        add_action = menu.addAction("新增一列")
+        remove_action = menu.addAction("刪除選定列")
+        move_up_action = menu.addAction("上移")
+        move_down_action = menu.addAction("下移")
+        
+        action = menu.exec_(self.ui_manager.table_view.mapToGlobal(pos))
+        
+        selected_indexes = self.ui_manager.table_view.selectionModel().selectedRows()
+        
+        # 將 proxy index 轉換為 source index
+        source_indexes = [self.proxy_model.mapToSource(index) for index in selected_indexes]
+        
+        if not source_indexes:
+            selected_row = -1
+        else:
+            selected_row = source_indexes[0].row()
+
+        if action == add_action:
+            self.data_manager.add_row()
+        elif action == remove_action and selected_row != -1:
+            self.data_manager.remove_row(selected_row)
+        elif action == move_up_action and selected_row != -1:
+            new_index = self.data_manager.move_row_up(selected_row)
+            # 更新選擇
+            proxy_index = self.proxy_model.mapFromSource(self.table_model.index(new_index, 0))
+            self.ui_manager.table_view.selectRow(proxy_index.row())
+        elif action == move_down_action and selected_row != -1:
+            new_index = self.data_manager.move_row_down(selected_row)
+            proxy_index = self.proxy_model.mapFromSource(self.table_model.index(new_index, 0))
+            self.ui_manager.table_view.selectRow(proxy_index.row())
+
+#================================================================================
+# Helper Classes
+#================================================================================
+class PandasModel(QAbstractTableModel):
+    """一個用於在 QTableView 中顯示 pandas DataFrame 的模型"""
+    def __init__(self, data):
+        QAbstractTableModel.__init__(self)
+        self._data = data
+
+    def rowCount(self, parent=QModelIndex()):
+        return self._data.shape[0]
+
+    def columnCount(self, parent=QModelIndex()):
+        return self._data.shape[1]
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        if role == Qt.DisplayRole or role == Qt.EditRole:
+            return str(self._data.iloc[index.row(), index.column()])
+        return None
+
+    def setData(self, index, value, role):
+        if role == Qt.EditRole:
+            self._data.iloc[index.row(), index.column()] = value
+            self.dataChanged.emit(index, index)
+            return True
+        return False
+
+    def headerData(self, section, orientation, role):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            return self._data.columns[section]
+        if orientation == Qt.Vertical and role == Qt.DisplayRole:
+            return str(self._data.index[section])
+        return None
+        
+    def flags(self, index):
+        return Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable
+
+    def update_data(self, new_data):
+        """用新的 DataFrame 更新模型"""
+        self.beginResetModel()
+        self._data = new_data
+        self.endResetModel()
+
+class DataLoaderThread(QThread):
+    """在背景執行緒中載入數據的工人"""
+    def __init__(self, data_manager, file_path):
+        super().__init__()
+        self.data_manager = data_manager
+        self.file_path = file_path
+
+    def run(self):
+        """執行緒的進入點"""
+        self.data_manager.load_data(self.file_path)
+
+#================================================================================
+# Main Execution
+#================================================================================
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    
+    # 建立 MVC 元件
+    data_manager = DataManager()
+    ui_manager = UIManager()
+    controller = MainController(data_manager, ui_manager)
+    
+    ui_manager.show()
+    sys.exit(app.exec())
+
