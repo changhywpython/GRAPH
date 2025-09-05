@@ -1,439 +1,237 @@
-# main_tetris_2025_final_v2.py
-# -*- coding: utf-8 -*-
+import sys
+import os
+import json
+from zipfile import BadZipFile
 
-import tkinter as tk
-from tkinter import font, messagebox
-from PIL import Image, ImageTk, ImageDraw
-import random
-from typing import List, Dict, Any, Optional, Tuple
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import matplotlib.ticker as ticker
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT
 
-# ==============================================================================
-# --- 設定檔 (Configuration) ---
-# (此部分無變更)
-# ==============================================================================
-class GameConfig:
-    """遊戲設定常數"""
-    BOARD_WIDTH: int = 10
-    BOARD_HEIGHT: int = 20
-    BLOCK_SIZE: int = 32
-    BORDER_WIDTH: int = 10
-    SIDE_PANEL_WIDTH: int = 200
-    
-    WINDOW_WIDTH: int = (BOARD_WIDTH * BLOCK_SIZE) + (2 * BORDER_WIDTH) + SIDE_PANEL_WIDTH
-    WINDOW_HEIGHT: int = (BOARD_HEIGHT * BLOCK_SIZE) + (2 * BORDER_WIDTH)
-    
-    INITIAL_SPEED: int = 800
-    SPEED_DECREASE_FACTOR: float = 0.9
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QLabel, QLineEdit, QPushButton,
+    QComboBox, QFileDialog, QDoubleSpinBox, QMessageBox,
+    QColorDialog, QCheckBox, QTabWidget, QTableWidget, QTableWidgetItem,
+    QSpinBox, QScrollArea, QFrame, QListWidget, QAbstractItemView
+)
+from PySide6.QtCore import Qt, QTimer, QObject, Signal, Slot
+from PySide6.QtGui import QColor, QKeySequence
 
-    LINES_TO_LEVEL_UP: int = 10
-    SCORE_MAPPING: Dict[int, int] = {1: 100, 2: 300, 3: 500, 4: 800}
-    T_SPIN_SCORE_MAPPING: Dict[int, int] = {0: 400, 1: 800, 2: 1200, 3: 1600}
-    COMBO_BONUS_SCORE: int = 50
-    
-    SHAPES: Dict[str, Dict[str, Any]] = {
-        'I': {'shape': [[1, 1, 1, 1]], 'color': '#00F0F0'},
-        'J': {'shape': [[1, 0, 0], [1, 1, 1]], 'color': '#0000F0'},
-        'L': {'shape': [[0, 0, 1], [1, 1, 1]], 'color': '#F0A000'},
-        'O': {'shape': [[1, 1], [1, 1]], 'color': '#F0F000'},
-        'S': {'shape': [[0, 1, 1], [1, 1, 0]], 'color': '#00F000'},
-        'T': {'shape': [[0, 1, 0], [1, 1, 1]], 'color': '#A000F0'},
-        'Z': {'shape': [[1, 1, 0], [0, 1, 1]], 'color': '#F00000'}
-    }
+# 檢查 scipy 是否存在，並處理 ImportError
+try:
+    from scipy.interpolate import PchipInterpolator
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    print("警告: 找不到 scipy 函式庫，平滑曲線功能將不可用。請使用 'pip install scipy' 進行安裝。")
 
 # ==============================================================================
-# --- 模型 (Model): (此部分無變更) ---
+# --- Model: 數據管理核心 ---
 # ==============================================================================
-class TetrisModel:
-    def __init__(self):
-        self.config = GameConfig()
-        self.reset()
+class PlottingModel(QObject):
+    """
+    負責應用程式的所有數據管理、狀態儲存和業務邏輯。
+    不直接與 UI 互動，而是透過信號通知變更。
+    """
+    data_changed = Signal()
+    settings_changed = Signal()
+    file_loaded = Signal(list)
+    error_occurred = Signal(str)
 
-    def reset(self):
-        self.board: List[List[Optional[str]]] = [[None for _ in range(self.config.BOARD_WIDTH)] for _ in range(self.config.BOARD_HEIGHT)]
-        self.score: int = 0
-        self.lines_cleared: int = 0
-        self.level: int = 1
-        self.game_over: bool = False
-        self.combo_counter: int = -1
-        self.piece_bag: List[str] = []
-        self._fill_piece_bag()
-        self.current_piece: Optional[Dict[str, Any]] = None
-        self.next_piece_shape: str = self._get_next_shape_from_bag()
-        self.held_piece_shape: Optional[str] = None
-        self.can_hold: bool = True
-        self.last_move_was_rotation: bool = False
-        self.last_move_info: Optional[str] = None
-        self.spawn_new_piece()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.datasets = []
+        self.original_datasets = []
+        self.excel_data = None
+        self.data_source = 'manual'
+        self.settings = self._get_default_settings()
+        self.annotation_positions = {}
 
-    def _fill_piece_bag(self):
-        self.piece_bag = list(self.config.SHAPES.keys())
-        random.shuffle(self.piece_bag)
-
-    def _get_next_shape_from_bag(self) -> str:
-        if not self.piece_bag: self._fill_piece_bag()
-        return self.piece_bag.pop()
-
-    def _spawn_piece_by_shape(self, shape_name: str):
-        shape_data = self.config.SHAPES[shape_name]
-        self.current_piece = {
-            'name': shape_name,
-            'matrix': [row[:] for row in shape_data['shape']],
-            'color': shape_data['color'],
-            'x': self.config.BOARD_WIDTH // 2 - len(shape_data['shape'][0]) // 2,
-            'y': 0
+    def _get_default_settings(self):
+        """返回所有繪圖設定的預設值"""
+        return {
+            "title": "多功能圖表", "x_label": "", "y_label": "",
+            "plot_color_hex": "#1f77b4", "bg_color_hex": "#ffffff",
+            "major_grid_color_hex": "#cccccc", "minor_grid_color_hex": "#eeeeee",
+            "border_color_hex": "#000000", "x_label_color_hex": "#000000",
+            "y_label_color_hex": "#000000", "data_label_color_hex": "#000000",
+            "minor_tick_color_hex": "#000000", "x_interval": 1.0, "y_interval": 1.0,
+            "x_decimal": 2, "y_decimal": 2, "show_data_labels": False,
+            "show_x_labels": True, "show_y_labels": True, "data_label_size": 10,
+            "is_line_checked": False, "is_scatter_checked": False, "is_bar_checked": False,
+            "is_box_checked": False, "line_width": 2.0, "bar_width": 0.8,
+            "border_width": 1.0, "point_size": 10.0, "x_label_size": 12,
+            "y_label_size": 12, "x_label_bold": False, "y_label_bold": False,
+            "x_tick_label_size": 10, "y_tick_label_size": 10,
+            "x_tick_label_bold": False, "y_tick_label_bold": False,
+            "linestyle": "實線", "marker": "圓形", "connect_scatter": False,
+            "show_major_grid": True, "show_minor_grid": False, "axis_border_width": 1.0,
+            "legend_size": 10, "tick_direction": "朝外", "minor_x_interval": 0.5,
+            "minor_y_interval": 0.5, "minor_tick_length": 4.0, "minor_tick_width": 0.6,
+            "major_tick_length": 3.5, "major_tick_width": 0.8, "smooth_line": False,
         }
-        if not self._is_valid_position(self.current_piece['matrix'], self.current_piece['x'], self.current_piece['y']):
-            self.game_over = True
 
-    def spawn_new_piece(self):
-        self.can_hold = True
-        self.last_move_was_rotation = False
-        shape_to_spawn = self.next_piece_shape
-        self.next_piece_shape = self._get_next_shape_from_bag()
-        self._spawn_piece_by_shape(shape_to_spawn)
-
-    def hold_piece(self):
-        if not self.can_hold: return
-        self.can_hold = False
-        if self.held_piece_shape is None:
-            self.held_piece_shape = self.current_piece['name']
-            self.spawn_new_piece()
-        else:
-            current_shape_name = self.current_piece['name']
-            shape_to_spawn = self.held_piece_shape
-            self.held_piece_shape = current_shape_name
-            self._spawn_piece_by_shape(shape_to_spawn)
-
-    def move(self, dx: int, dy: int) -> bool:
-        if self.game_over or not self.current_piece: return False
-        new_x = self.current_piece['x'] + dx
-        new_y = self.current_piece['y'] + dy
-        if self._is_valid_position(self.current_piece['matrix'], new_x, new_y):
-            self.current_piece['x'] = new_x
-            self.current_piece['y'] = new_y
-            self.last_move_was_rotation = False
-            return True
-        return False
-
-    def rotate(self, clockwise: bool = True):
-        if self.game_over or not self.current_piece or self.current_piece['name'] == 'O': return
-        matrix = self.current_piece['matrix']
-        if clockwise:
-            rotated_matrix = [list(row) for row in zip(*matrix[::-1])]
-        else:
-            rotated_matrix = [list(row) for row in zip(*matrix)][::-1]
-        test_offsets = [0, -1, 1, -2, 2] 
-        for offset in test_offsets:
-            if self._is_valid_position(rotated_matrix, self.current_piece['x'] + offset, self.current_piece['y']):
-                self.current_piece['x'] += offset
-                self.current_piece['matrix'] = rotated_matrix
-                self.last_move_was_rotation = True
+    def load_file(self, filename):
+        """從檔案路徑載入數據"""
+        try:
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext == ".xlsx":
+                self.excel_data = pd.read_excel(filename, engine="openpyxl")
+            elif file_ext == ".xls":
+                self.excel_data = pd.read_excel(filename, engine="xlrd")
+            elif file_ext == ".csv":
+                try:
+                    self.excel_data = pd.read_csv(filename, encoding='utf-8')
+                except UnicodeDecodeError:
+                    self.excel_data = pd.read_csv(filename, encoding='big5')
+            else:
+                self.error_occurred.emit("不支援的檔案類型，請選擇 .xlsx、.xls 或 .csv 檔案。")
                 return
 
-    def hard_drop(self):
-        if self.game_over or not self.current_piece: return
-        ghost_y = self._calculate_ghost_y()
-        self.current_piece['y'] = ghost_y
-        self.lock_piece()
+            self.data_source = 'file'
+            self.file_loaded.emit(self.excel_data.columns.tolist())
+        except BadZipFile:
+            self.error_occurred.emit("檔案已損壞或非標準格式。")
+        except Exception as e:
+            self.error_occurred.emit(f"無法讀取檔案：{e}")
 
-    def lock_piece(self):
-        if self.game_over or not self.current_piece: return
-        is_t_spin = False
-        if self.current_piece['name'] == 'T' and self.last_move_was_rotation:
-            if self._check_t_spin():
-                is_t_spin = True
-        matrix = self.current_piece['matrix']
-        x, y = self.current_piece['x'], self.current_piece['y']
-        for r, row in enumerate(matrix):
-            for c, cell in enumerate(row):
-                if cell: self.board[y + r][x + c] = self.current_piece['color']
-        self.current_piece = None
-        lines_cleared_count = self._clear_lines()
-        self._update_score_and_level(lines_cleared_count, is_t_spin)
-        if lines_cleared_count > 0:
-            self.combo_counter += 1
-        else:
-            self.combo_counter = -1
-        self.spawn_new_piece()
-
-    def _check_t_spin(self) -> bool:
-        if not self.current_piece or self.current_piece['name'] != 'T': return False
-        center_x = self.current_piece['x'] + 1
-        center_y = self.current_piece['y'] + 1
-        corners = [(center_y - 1, center_x - 1), (center_y - 1, center_x + 1), (center_y + 1, center_x - 1), (center_y + 1, center_x + 1)]
-        occupied_corners = 0
-        for r, c in corners:
-            if not (0 <= c < self.config.BOARD_WIDTH and 0 <= r < self.config.BOARD_HEIGHT) or self.board[r][c] is not None:
-                occupied_corners += 1
-        return occupied_corners >= 3
-
-    def _clear_lines(self) -> int:
-        new_board = [row for row in self.board if not all(cell is not None for cell in row)]
-        lines_cleared_count = self.config.BOARD_HEIGHT - len(new_board)
-        for _ in range(lines_cleared_count):
-            new_board.insert(0, [None for _ in range(self.config.BOARD_WIDTH)])
-        self.board = new_board
-        return lines_cleared_count
-
-    def _update_score_and_level(self, num_cleared: int, is_t_spin: bool):
-        self.last_move_info = None
-        score_to_add = 0
-        if is_t_spin:
-            score_to_add = self.config.T_SPIN_SCORE_MAPPING.get(num_cleared, 0) * self.level
-            line_names = {1: "SINGLE", 2: "DOUBLE", 3: "TRIPLE"}
-            self.last_move_info = f"T-SPIN {line_names.get(num_cleared, '')}".strip()
-        elif num_cleared > 0:
-            score_to_add = self.config.SCORE_MAPPING.get(num_cleared, 0) * self.level
-            if num_cleared == 4: self.last_move_info = "TETRIS!"
-        self.score += score_to_add
-        if self.combo_counter > 0 and num_cleared > 0:
-            self.score += self.config.COMBO_BONUS_SCORE * self.combo_counter * self.level
-        self.lines_cleared += num_cleared
-        self.level = 1 + (self.lines_cleared // self.config.LINES_TO_LEVEL_UP)
-
-    def _is_valid_position(self, matrix: List[List[int]], x: int, y: int) -> bool:
-        for r, row in enumerate(matrix):
-            for c, cell in enumerate(row):
-                if cell:
-                    board_x, board_y = x + c, y + r
-                    if not (0 <= board_x < self.config.BOARD_WIDTH and 0 <= board_y < self.config.BOARD_HEIGHT): return False
-                    if self.board[board_y][board_x] is not None: return False
-        return True
-    
-    def _calculate_ghost_y(self) -> int:
-        if not self.current_piece: return -1
-        matrix, x, y = self.current_piece['matrix'], self.current_piece['x'], self.current_piece['y']
-        ghost_y = y
-        while self._is_valid_position(matrix, x, ghost_y + 1):
-            ghost_y += 1
-        return ghost_y
-
-    def get_game_state(self) -> Dict[str, Any]:
-        state = {
-            'board': [row[:] for row in self.board],
-            'score': self.score, 'level': self.level, 'lines_cleared': self.lines_cleared,
-            'next_piece_shape_data': self.config.SHAPES[self.next_piece_shape],
-            'held_piece_shape_data': self.config.SHAPES.get(self.held_piece_shape),
-            'game_over': self.game_over,
-            'combo': self.combo_counter,
-            'current_piece': self.current_piece,
-            'last_move_info': self.last_move_info,
-        }
-        if self.current_piece: state['ghost_y'] = self._calculate_ghost_y()
-        return state
-
-# ==============================================================================
-# --- 視圖 (View): (此部分無變更) ---
-# ==============================================================================
-class TetrisView:
-    def __init__(self, master: tk.Tk, config: GameConfig):
-        self.master = master
-        self.config = config
-        self.master.title("Modern Tetris 2025 - Final v2")
-        self.master.configure(bg='#1A1A1A')
-        self.master.resizable(False, False)
-        self._center_window()
-
-        self.canvas = tk.Canvas(master, width=self.config.WINDOW_WIDTH, height=self.config.WINDOW_HEIGHT, bg='#1A1A1A', highlightthickness=0)
-        self.canvas.pack(padx=10, pady=10)
-        
-        self.title_font = font.Font(family="Segoe UI", size=20, weight="bold")
-        self.info_font_header = font.Font(family="Segoe UI", size=12, weight="bold")
-        self.info_font_value = font.Font(family="Segoe UI", size=14)
-        self.special_move_font = font.Font(family="Segoe UI", size=16, weight="bold", slant="italic")
-        self.game_over_font = font.Font(family="Segoe UI", size=48, weight="bold")
-
-        self._block_image_cache: Dict[str, ImageTk.PhotoImage] = {}
-
-    def _center_window(self):
-        self.master.update_idletasks()
-        x = (self.master.winfo_screenwidth() - self.config.WINDOW_WIDTH) // 2
-        y = (self.master.winfo_screenheight() - self.config.WINDOW_HEIGHT) // 2
-        self.master.geometry(f'{self.config.WINDOW_WIDTH}x{self.config.WINDOW_HEIGHT}+{x}+{y}')
-        
-    def _create_block_image(self, color: str, size: int, is_ghost: bool = False) -> ImageTk.PhotoImage:
-        cache_key = f"{color}_{size}_{is_ghost}"
-        if cache_key in self._block_image_cache: return self._block_image_cache[cache_key]
-        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        radius = size // 6
-        if is_ghost:
-            draw.rounded_rectangle((1, 1, size - 2, size - 2), radius=radius, outline=color, width=2)
-        else:
-            draw.rounded_rectangle((1, 1, size - 1, size - 1), radius=radius, fill=color)
-            r, g, b = self.master.winfo_rgb(color)
-            highlight_color = f'#{int(min(r/256+60,255)):02x}{int(min(g/256+60,255)):02x}{int(min(b/256+60,255)):02x}'
-            draw.arc((radius, radius, size-radius, size-radius), 180, 270, fill=highlight_color, width=radius//2)
-        photo_img = ImageTk.PhotoImage(img)
-        self._block_image_cache[cache_key] = photo_img
-        return photo_img
-
-    def render(self, state: Dict[str, Any]):
-        self.canvas.delete("all")
-        self._draw_background()
-        self._draw_board(state['board'])
-        current_piece = state.get('current_piece')
-        if current_piece and not state['game_over']:
-            self._draw_ghost_piece(current_piece, state['ghost_y'])
-            self._draw_current_piece(current_piece)
-        self._draw_ui_panel(state)
-        if state['game_over']: self._draw_game_over_overlay()
-
-    def _draw_background(self):
-        w = self.config.BOARD_WIDTH * self.config.BLOCK_SIZE
-        h = self.config.BOARD_HEIGHT * self.config.BLOCK_SIZE
-        self.canvas.create_rectangle(0, 0, w, h, fill='#101010', outline="#333333")
-        for i in range(1, self.config.BOARD_WIDTH): self.canvas.create_line(i * self.config.BLOCK_SIZE, 0, i * self.config.BLOCK_SIZE, h, fill="#282828")
-        for i in range(1, self.config.BOARD_HEIGHT): self.canvas.create_line(0, i * self.config.BLOCK_SIZE, w, i * self.config.BLOCK_SIZE, fill="#282828")
-
-    def _draw_board(self, board: List[List[Optional[str]]]):
-        for y, row in enumerate(board):
-            for x, color in enumerate(row):
-                if color: self._draw_block(x, y, color)
-    
-    def _draw_current_piece(self, piece: Dict[str, Any]):
-        matrix, x, y, color = piece['matrix'], piece['x'], piece['y'], piece['color']
-        for r, row in enumerate(matrix):
-            for c, cell in enumerate(row):
-                if cell: self._draw_block(x + c, y + r, color)
-
-    def _draw_ghost_piece(self, piece: Dict[str, Any], ghost_y: int):
-        matrix, x, color = piece['matrix'], piece['x'], piece['color']
-        for r, row in enumerate(matrix):
-            for c, cell in enumerate(row):
-                if cell: self._draw_block(x + c, ghost_y + r, color, is_ghost=True)
-
-    def _draw_block(self, x: int, y: int, color: str, is_ghost: bool = False):
-        if y < 0: return
-        px, py = x * self.config.BLOCK_SIZE, y * self.config.BLOCK_SIZE
-        block_img = self._create_block_image(color, self.config.BLOCK_SIZE, is_ghost)
-        self.canvas.create_image(px, py, image=block_img, anchor='nw')
-
-    def _draw_ui_panel(self, state: Dict[str, Any]):
-        x_base = self.config.BOARD_WIDTH * self.config.BLOCK_SIZE + 60
-        self.canvas.create_text(x_base, 20, text="TETRIS", font=self.title_font, fill="#00F0F0", anchor='nw')
-        self._draw_preview_box(x_base, 90, "HOLD", state['held_piece_shape_data'])
-        self._draw_preview_box(x_base, 200, "NEXT", state['next_piece_shape_data'])
-        ui_items = {"SCORE": state['score'], "LEVEL": state['level'], "LINES": state['lines_cleared']}
-        y_offset = 320
-        for header, value in ui_items.items():
-            self.canvas.create_text(x_base, y_offset, text=header, font=self.info_font_header, fill="#CCCCCC", anchor='nw')
-            self.canvas.create_text(x_base, y_offset + 20, text=str(value), font=self.info_font_value, fill="white", anchor='nw')
-            y_offset += 60
-        y_offset += 20
-        move_info_text = state['last_move_info']
-        if move_info_text:
-            self.canvas.create_text(x_base, y_offset, text=move_info_text, font=self.special_move_font, fill="#39FF14", anchor='nw')
-            y_offset += 30
-        if state['combo'] > 0:
-            self.canvas.create_text(x_base, y_offset, text=f"COMBO x{state['combo'] + 1}", font=self.special_move_font, fill="#FFD700", anchor='nw')
-
-    def _draw_preview_box(self, x: int, y: int, title: str, piece_data: Optional[Dict[str, Any]]):
-        self.canvas.create_text(x, y, text=title, font=self.info_font_header, fill="#CCCCCC", anchor='nw')
-        bg_w = 4 * 20 + 10
-        self.canvas.create_rectangle(x, y + 25, x + bg_w, y + 25 + bg_w, fill="#101010", outline="#333")
-        if piece_data:
-            matrix, color = piece_data['shape'], piece_data['color']
-            blk_size = 20
-            w, h = len(matrix[0]) * blk_size, len(matrix) * blk_size
-            x_off, y_off = x + (bg_w - w) / 2, y + 25 + (bg_w - h) / 2
-            for r, row in enumerate(matrix):
-                for c, cell in enumerate(row):
-                    if cell:
-                        preview_img = self._create_block_image(color, blk_size)
-                        self.canvas.create_image(x_off + c*blk_size, y_off + r*blk_size, image=preview_img, anchor='nw')
-
-    def _draw_game_over_overlay(self):
-        w, h = self.config.BOARD_WIDTH*self.config.BLOCK_SIZE, self.config.BOARD_HEIGHT*self.config.BLOCK_SIZE
-        self.canvas.create_rectangle(0, 0, w, h, fill='black', stipple='gray50')
-        self.canvas.create_text(w/2, h/2 - 50, text="GAME OVER", font=self.game_over_font, fill="#FF3B30")
-        self.canvas.create_text(w/2, h/2 + 20, text="Press 'R' to Restart", font=self.info_font_value, fill="white")
-
-# ==============================================================================
-# --- 控制器 (Controller): *** 此處有變更 *** ---
-# ==============================================================================
-class TetrisController:
-    def __init__(self, master: tk.Tk):
-        self.master = master
-        self.config = GameConfig()
-        self.model = TetrisModel()
-        self.view = TetrisView(master, self.config)
-        self._bind_events()
-        self.game_loop_id: Optional[str] = None
-        self.start_game()
-
-    def _bind_events(self):
-        """綁定所有鍵盤事件"""
-        self.master.bind("<KeyPress-Left>", self._handle_key_press)
-        self.master.bind("<KeyPress-Right>", self._handle_key_press)
-        self.master.bind("<KeyPress-Down>", self._handle_key_press)
-        self.master.bind("<KeyPress-space>", self._handle_key_press)
-        self.master.bind("<KeyPress-r>", self._handle_key_press)
-        self.master.bind("<KeyPress-R>", self._handle_key_press)
-        self.master.bind("<KeyPress-Control_L>", self._handle_key_press)
-        self.master.bind("<KeyPress-Control_R>", self._handle_key_press)
-        
-        # *** 變更點 1: 重新綁定上方向鍵 ***
-        self.master.bind("<KeyPress-Up>", self._handle_key_press)
-        
-        self.master.bind("<KeyPress-z>", self._handle_key_press)
-        self.master.bind("<KeyPress-Z>", self._handle_key_press)
-        self.master.bind("<KeyPress-x>", self._handle_key_press)
-        self.master.bind("<KeyPress-X>", self._handle_key_press)
-
-    def _handle_key_press(self, event: tk.Event):
-        if self.model.game_over:
-            if event.keysym.lower() == 'r': self.start_game()
+    def update_data_from_file(self, x_col, y_cols):
+        """根據選擇的欄位更新數據集"""
+        if self.excel_data is None or not x_col or not y_cols:
+            self.datasets = []
+            self.data_changed.emit()
             return
+
+        try:
+            x_data = self.excel_data[x_col].tolist()
+            self.datasets = []
+            for y_col in y_cols:
+                y_data = self.excel_data[y_col].tolist()
+                num_points = len(x_data)
+                self.datasets.append({
+                    'name': y_col, 'x': x_data, 'y': y_data,
+                    'colors': [self.settings['plot_color_hex']] * num_points,
+                    'primary_color': self.settings['plot_color_hex'],
+                    'line_segment_colors': [self.settings['plot_color_hex']] * (num_points - 1)
+                })
+            self.original_datasets = [ds.copy() for ds in self.datasets]
+            self.data_changed.emit()
+        except Exception as e:
+            self.error_occurred.emit(f"選擇的欄位有問題，無法讀取數據。\n\n詳細錯誤：{e}")
+            self.datasets = []
+            self.data_changed.emit()
+
+    def update_data_from_table(self, table_data):
+        """從表格的數據結構更新內部數據集"""
+        self.data_source = 'manual'
+        x_data = table_data['x']
         
-        key = event.keysym.lower()
-        if key == "left": self.model.move(-1, 0)
-        elif key == "right": self.model.move(1, 0)
-        elif key == "down": self.soft_drop()
-        elif key == "space": self.model.hard_drop()
+        new_datasets = []
+        for i, y_col_data in enumerate(table_data['y_cols']):
+            dataset = {
+                'name': y_col_data['name'],
+                'x': x_data,
+                'y': y_col_data['y'],
+                'colors': y_col_data['colors'],
+                'primary_color': y_col_data['colors'][0] if y_col_data['colors'] else self.settings['plot_color_hex'],
+                'line_segment_colors': [y_col_data['colors'][0]] * (len(x_data) -1) if y_col_data['colors'] else []
+            }
+            new_datasets.append(dataset)
         
-        # *** 變更點 2: 將 'up' 加入順時針旋轉 ***
-        elif key == "up" or key == "x": self.model.rotate(clockwise=True)
-        elif key == "z": self.model.rotate(clockwise=False)
-
-        elif "control" in key: self.model.hold_piece()
+        self.datasets = new_datasets
+        self.original_datasets = [ds.copy() for ds in self.datasets]
+        self.data_changed.emit()
         
-        # 每次操作後都立即重繪畫面，提供即時反饋
-        self.view.render(self.model.get_game_state())
-
-    def soft_drop(self):
-        if self.model.move(0, 1): self.model.score += 1
-
-    def start_game(self):
-        if self.game_loop_id: self.master.after_cancel(self.game_loop_id)
-        self.model.reset()
-        self._game_loop()
-
-    def _game_loop(self):
-        """遊戲主循環"""
-        if not self.model.game_over:
-            
-            # *** 變更點 3: 方塊觸底時自動鎖定 ***
-            # 嘗試自動下降，如果失敗（已觸底），則立即鎖定方塊
-            if not self.model.move(0, 1):
-                self.model.lock_piece()
-
-            self.view.render(self.model.get_game_state())
-            
-            drop_speed = int(self.config.INITIAL_SPEED * (self.config.SPEED_DECREASE_FACTOR**(self.model.level-1)))
-            self.game_loop_id = self.master.after(drop_speed, self._game_loop)
+    def add_row(self):
+        """新增一筆空數據"""
+        if not self.datasets:
+            self.datasets.append({
+                'name': '數據1', 'x': [0], 'y': [0], 
+                'colors': [self.settings['plot_color_hex']],
+                'primary_color': self.settings['plot_color_hex'],
+                'line_segment_colors': []
+            })
         else:
-            # 遊戲結束時，確保最終畫面被渲染
-            self.view.render(self.model.get_game_state())
+            for ds in self.datasets:
+                last_x = ds['x'][-1] if ds['x'] else 0
+                new_x = last_x + 1 if isinstance(last_x, (int, float)) else 0
+                ds['x'].append(new_x)
+                ds['y'].append(0)
+                ds['colors'].append(ds['primary_color'])
+                if len(ds['x']) > 1:
+                    ds['line_segment_colors'].append(ds['primary_color'])
+        self.original_datasets = [ds.copy() for ds in self.datasets]
+        self.data_changed.emit()
 
-# ==============================================================================
-# --- 程式主入口 (Main Entry Point) ---
-# ==============================================================================
-if __name__ == "__main__":
-    try:
-        root = tk.Tk()
-        app = TetrisController(root)
-        root.mainloop()
-    except Exception as e:
-        import traceback
-        messagebox.showerror("An Error Occurred", f"An unexpected error occurred:\n\n{e}\n\n{traceback.format_exc()}")
+    def remove_rows(self, row_indices):
+        """移除指定索引的數據"""
+        for row in sorted(row_indices, reverse=True):
+            if self.datasets and 0 <= row < len(self.datasets[0]['x']):
+                for dataset in self.datasets:
+                    del dataset['x'][row]
+                    del dataset['y'][row]
+                    del dataset['colors'][row]
+                    if row < len(dataset['line_segment_colors']):
+                        del dataset['line_segment_colors'][row]
+        self.original_datasets = [ds.copy() for ds in self.datasets]
+        self.data_changed.emit()
+
+    def move_row(self, from_index, to_index):
+        """移動數據行的位置"""
+        if not (self.datasets and 0 <= from_index < len(self.datasets[0]['x']) and 0 <= to_index < len(self.datasets[0]['x'])):
+            return
+        for ds in self.datasets:
+            ds['x'].insert(to_index, ds['x'].pop(from_index))
+            ds['y'].insert(to_index, ds['y'].pop(from_index))
+            ds['colors'].insert(to_index, ds['colors'].pop(from_index))
+        self.original_datasets = [ds.copy() for ds in self.datasets]
+        self.data_changed.emit()
+
+    def clear_all(self):
+        """清空所有數據和設定"""
+        self.datasets = []
+        self.original_datasets = []
+        self.excel_data = None
+        self.data_source = 'manual'
+        self.annotation_positions.clear()
+        self.settings = self._get_default_settings()
+        self.data_changed.emit()
+        self.settings_changed.emit()
+
+    def update_setting(self, key, value):
+        """更新單一設定值"""
+        if key in self.settings and self.settings[key] != value:
+            self.settings[key] = value
+            self.settings_changed.emit()
+
+    def update_settings(self, new_settings):
+        """用新的設定字典更新所有設定"""
+        self.settings.update(new_settings)
+        self.settings_changed.emit()
+    
+    def get_settings(self):
+        """獲取所有設定"""
+        return self.settings.copy()
+
+    def update_point_color(self, ds_index, pt_index, color, artist_type):
+        """更新特定數據點的顏色"""
+        if ds_index < len(self.datasets):
+            if artist_type == 'line':
+                if pt_index > 0 and pt_index <= len(self.datasets[ds_index]['line_segment_colors']):
+                    self.datasets[ds_index]['line_segment_colors'][pt_index - 1] = color
+            elif artist_type in ['scatter', 'bar'] and pt_index < len(self.datasets[ds_index]['colors']):
+                self.datasets[ds_index]['colors'][pt_index] = color
+            self.data_changed.emit()
+
+    def update_all_colors(self, new_color):
+        """更新所有數據點的顏色"""
+        self.settings['plot_color_hex'] = new_color
+        for ds in self.datasets:
+            ds['primary_color'] = new_color
+            ds['colors'] = [new_color] * len(ds['colors'])
+            ds['line_segment_colors'] = [new_color] * len(ds['line_segment_colors'])
+        self.data_changed.emit()
+        self.settings_changed.emit()
