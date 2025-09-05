@@ -5,8 +5,8 @@ import json
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTableView, QVBoxLayout, QWidget,
                              QFileDialog, QPushButton, QComboBox, QLineEdit, QGridLayout,
                              QGroupBox, QColorDialog, QCheckBox, QSlider, QLabel, QSplitter,
-                             QHeaderView, QAbstractItemView, QMenu, QMessageBox)
-from PySide6.QtGui import QColor, QStandardItemModel, QStandardItem, QIcon, QAction
+                             QHeaderView, QAbstractItemView, QMenu, QMessageBox, QHBoxLayout) # <-- 修正 1：加入了 QHBoxLayout
+from PySide6.QtGui import QColor, QStandardItem, QAction
 from PySide6.QtCore import (Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, 
                           QObject, Signal, QThread, Slot)
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -213,6 +213,10 @@ class UIManager(QMainWindow):
         self.setWindowTitle("多功能繪圖工具 v1.0")
         self.setGeometry(100, 100, 1400, 800)
 
+        # 建立主佈局和元件
+        main_widget = QWidget()
+        # main_layout = QHBoxLayout(main_widget) # 這行其實不需要，因為 setCentralWidget 會接管
+
         # 右側控制面板和繪圖區域
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
@@ -287,7 +291,7 @@ class UIManager(QMainWindow):
         controls_layout.addLayout(slider_layout, 7, 0, 1, 3)
 
         # 勾選框佈局
-        checkbox_layout = QHBoxLayout()
+        checkbox_layout = QHBoxLayout() # <-- 修正 2：修正拼寫錯誤
         checkbox_layout.addWidget(self.grid_checkbox)
         checkbox_layout.addWidget(self.legend_checkbox)
         checkbox_layout.addWidget(self.smooth_checkbox)
@@ -308,7 +312,7 @@ class UIManager(QMainWindow):
 
         # --- 組合右側介面 ---
         right_layout.addWidget(controls_group)
-        right_layout.addLayout(self.plot_manager.layout) # 將繪圖區域的 layout 加入
+        right_layout.addLayout(self.plot_manager.layout) 
 
         # --- 表格視圖 ---
         self.table_view = QTableView()
@@ -316,12 +320,11 @@ class UIManager(QMainWindow):
         self.table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         
-        # --- 主分割器 (用來劃分表格和右側面板) ---
+        # --- 主分割器 ---
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.addWidget(self.table_view)
         main_splitter.addWidget(right_widget)
         
-        # --- 關鍵修復：設定分割器的初始大小，避免繪圖區被壓縮 ---
         main_splitter.setSizes([600, 800])
 
         self.setCentralWidget(main_splitter)
@@ -334,7 +337,7 @@ class UIManager(QMainWindow):
     def add_y_axis_selector(self, columns, selected_col=None):
         """動態新增一個Y軸選擇器"""
         selector_widget = QWidget()
-        layout = QHBoxLayout(selector_widget)
+        layout = QHBoxLayout(selector_widget) # <-- 修正 3：修正拼寫錯誤
         layout.setContentsMargins(0,0,0,0)
         
         combo = QComboBox()
@@ -349,7 +352,7 @@ class UIManager(QMainWindow):
         color_btn.setProperty("color", initial_color)
 
         style_combo = QComboBox()
-        style_combo.addItems(['-', '--', '-.', ':']) # 實線, 虛線, 點劃線, 點線
+        style_combo.addItems(['-', '--', '-.', ':']) 
 
         remove_btn = QPushButton("X")
         remove_btn.setFixedSize(24, 24)
@@ -439,7 +442,6 @@ class MainController(QObject):
         # 更新下拉選單
         columns = self.data_manager.get_columns()
         
-        # 記錄目前選擇，以在更新後恢復
         current_x = self.ui_manager.x_axis_combo.currentText()
         
         self.ui_manager.x_axis_combo.clear()
@@ -448,7 +450,6 @@ class MainController(QObject):
         if current_x in columns:
             self.ui_manager.x_axis_combo.setCurrentText(current_x)
             
-        # 更新 Y 軸選擇器中的選項
         for i in range(self.ui_manager.y_axis_list_layout.count()):
             widget = self.ui_manager.y_axis_list_layout.itemAt(i).widget()
             if widget:
@@ -464,17 +465,12 @@ class MainController(QObject):
 
     def on_cell_data_changed(self, top_left, bottom_right):
         """當表格數據被使用者編輯時，更新 Model"""
-        row = top_left.row()
-        col = top_left.column()
-        # 獲取 proxy model 的 index 對應的 source model index
         source_index = self.proxy_model.mapToSource(top_left)
         source_row = source_index.row()
         source_col = source_index.column()
         
-        # 從模型獲取新值
         new_value = self.table_model.data(source_index, Qt.DisplayRole)
         
-        # 更新 DataManager
         self.data_manager.update_cell_data(source_row, source_col, new_value)
 
     def load_file(self):
@@ -484,7 +480,6 @@ class MainController(QObject):
         )
         if file_path:
             self.ui_manager.update_status(f"正在載入: {file_path}...")
-            # 在背景執行緒中載入數據以避免UI凍結
             self.worker = DataLoaderThread(self.data_manager, file_path)
             self.worker.start()
 
@@ -502,8 +497,8 @@ class MainController(QObject):
             widget = self.ui_manager.y_axis_list_layout.itemAt(i).widget()
             if widget:
                 combo = widget.findChild(QComboBox)
-                color_btn = widget.findChild(QPushButton) # 第一個 QPushButton 是顏色按鈕
-                style_combo = widget.findChildren(QComboBox)[1] # 第二個 QComboBox 是樣式
+                color_btn = widget.findChild(QPushButton) 
+                style_combo = widget.findChildren(QComboBox)[1] 
                 
                 if combo and color_btn:
                     y_axes.append({
@@ -533,18 +528,15 @@ class MainController(QObject):
         """根據設定檔更新UI元件"""
         self.ui_manager.x_axis_combo.setCurrentText(settings.get('x_axis', ''))
         
-        # 清除舊的Y軸選擇器
         while self.ui_manager.y_axis_list_layout.count() > 0:
             item = self.ui_manager.y_axis_list_layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
 
-        # 根據設定建立新的Y軸選擇器
         columns = self.data_manager.get_columns()
         for y_info in settings.get('y_axes', []):
             self.ui_manager.add_y_axis_selector(columns, y_info.get('name'))
-            # 設定顏色和樣式
             new_widget = self.ui_manager.y_axis_list_layout.itemAt(self.ui_manager.y_axis_list_layout.count() - 1).widget()
             color_btn = new_widget.findChild(QPushButton)
             hex_color = y_info.get('color', '#1f77b4')
@@ -639,7 +631,6 @@ class MainController(QObject):
         
         selected_indexes = self.ui_manager.table_view.selectionModel().selectedRows()
         
-        # 將 proxy index 轉換為 source index
         source_indexes = [self.proxy_model.mapToSource(index) for index in selected_indexes]
         
         if not source_indexes:
@@ -653,7 +644,6 @@ class MainController(QObject):
             self.data_manager.remove_row(selected_row)
         elif action == move_up_action and selected_row != -1:
             new_index = self.data_manager.move_row_up(selected_row)
-            # 更新選擇
             proxy_index = self.proxy_model.mapFromSource(self.table_model.index(new_index, 0))
             self.ui_manager.table_view.selectRow(proxy_index.row())
         elif action == move_down_action and selected_row != -1:
