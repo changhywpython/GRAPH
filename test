@@ -1,4 +1,4 @@
-# main_tetris_2025_final.py
+# main_tetris_2025_final_v2.py
 # -*- coding: utf-8 -*-
 
 import tkinter as tk
@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 # ==============================================================================
 # --- 設定檔 (Configuration) ---
+# (此部分無變更)
 # ==============================================================================
 class GameConfig:
     """遊戲設定常數"""
@@ -26,13 +27,7 @@ class GameConfig:
 
     LINES_TO_LEVEL_UP: int = 10
     SCORE_MAPPING: Dict[int, int] = {1: 100, 2: 300, 3: 500, 4: 800}
-    # T-Spin 的特殊分數，遠高於一般消行
-    T_SPIN_SCORE_MAPPING: Dict[int, int] = {
-        0: 400,   # T-Spin Mini / T-Spin (不消行)
-        1: 800,   # T-Spin Single
-        2: 1200,  # T-Spin Double
-        3: 1600   # T-Spin Triple
-    }
+    T_SPIN_SCORE_MAPPING: Dict[int, int] = {0: 400, 1: 800, 2: 1200, 3: 1600}
     COMBO_BONUS_SCORE: int = 50
     
     SHAPES: Dict[str, Dict[str, Any]] = {
@@ -46,10 +41,9 @@ class GameConfig:
     }
 
 # ==============================================================================
-# --- 模型 (Model): 新增 T-Spin 偵測邏輯 ---
+# --- 模型 (Model): (此部分無變更) ---
 # ==============================================================================
 class TetrisModel:
-    """管理遊戲的狀態與邏輯"""
     def __init__(self):
         self.config = GameConfig()
         self.reset()
@@ -61,20 +55,14 @@ class TetrisModel:
         self.level: int = 1
         self.game_over: bool = False
         self.combo_counter: int = -1
-
         self.piece_bag: List[str] = []
         self._fill_piece_bag()
-        
         self.current_piece: Optional[Dict[str, Any]] = None
         self.next_piece_shape: str = self._get_next_shape_from_bag()
-        
         self.held_piece_shape: Optional[str] = None
         self.can_hold: bool = True
-        
-        # T-Spin 相關狀態
         self.last_move_was_rotation: bool = False
         self.last_move_info: Optional[str] = None
-
         self.spawn_new_piece()
 
     def _fill_piece_bag(self):
@@ -123,26 +111,23 @@ class TetrisModel:
         if self._is_valid_position(self.current_piece['matrix'], new_x, new_y):
             self.current_piece['x'] = new_x
             self.current_piece['y'] = new_y
-            self.last_move_was_rotation = False # 移動後重置旋轉旗標
+            self.last_move_was_rotation = False
             return True
         return False
 
     def rotate(self, clockwise: bool = True):
         if self.game_over or not self.current_piece or self.current_piece['name'] == 'O': return
-        
         matrix = self.current_piece['matrix']
-        if clockwise: # 順時針
+        if clockwise:
             rotated_matrix = [list(row) for row in zip(*matrix[::-1])]
-        else: # 逆時針
+        else:
             rotated_matrix = [list(row) for row in zip(*matrix)][::-1]
-        
-        # 簡易牆踢邏輯
         test_offsets = [0, -1, 1, -2, 2] 
         for offset in test_offsets:
             if self._is_valid_position(rotated_matrix, self.current_piece['x'] + offset, self.current_piece['y']):
                 self.current_piece['x'] += offset
                 self.current_piece['matrix'] = rotated_matrix
-                self.last_move_was_rotation = True # 旋轉成功，設定旗標
+                self.last_move_was_rotation = True
                 return
 
     def hard_drop(self):
@@ -153,54 +138,33 @@ class TetrisModel:
 
     def lock_piece(self):
         if self.game_over or not self.current_piece: return
-
         is_t_spin = False
-        # 僅在 T 方塊且最後一步是旋轉時，才檢查 T-Spin
         if self.current_piece['name'] == 'T' and self.last_move_was_rotation:
             if self._check_t_spin():
                 is_t_spin = True
-        
         matrix = self.current_piece['matrix']
         x, y = self.current_piece['x'], self.current_piece['y']
         for r, row in enumerate(matrix):
             for c, cell in enumerate(row):
                 if cell: self.board[y + r][x + c] = self.current_piece['color']
-        
         self.current_piece = None
         lines_cleared_count = self._clear_lines()
-
         self._update_score_and_level(lines_cleared_count, is_t_spin)
-
         if lines_cleared_count > 0:
             self.combo_counter += 1
         else:
             self.combo_counter = -1
-
         self.spawn_new_piece()
 
     def _check_t_spin(self) -> bool:
-        """T-Spin 偵測核心：檢查 T 方塊中心的四個角落是否有三個被佔據"""
         if not self.current_piece or self.current_piece['name'] != 'T': return False
-        
-        # T方塊 3x2 矩陣的中心點在 (x+1, y+1)
         center_x = self.current_piece['x'] + 1
         center_y = self.current_piece['y'] + 1
-
-        # 定義四個角落的相對位置
-        corners = [
-            (center_y - 1, center_x - 1), # 左上
-            (center_y - 1, center_x + 1), # 右上
-            (center_y + 1, center_x - 1), # 左下
-            (center_y + 1, center_x + 1), # 右下
-        ]
-        
+        corners = [(center_y - 1, center_x - 1), (center_y - 1, center_x + 1), (center_y + 1, center_x - 1), (center_y + 1, center_x + 1)]
         occupied_corners = 0
         for r, c in corners:
-            # 檢查角落是否超出邊界，或者已經有方塊
-            if not (0 <= c < self.config.BOARD_WIDTH and 0 <= r < self.config.BOARD_HEIGHT) or \
-               self.board[r][c] is not None:
+            if not (0 <= c < self.config.BOARD_WIDTH and 0 <= r < self.config.BOARD_HEIGHT) or self.board[r][c] is not None:
                 occupied_corners += 1
-        
         return occupied_corners >= 3
 
     def _clear_lines(self) -> int:
@@ -212,28 +176,18 @@ class TetrisModel:
         return lines_cleared_count
 
     def _update_score_and_level(self, num_cleared: int, is_t_spin: bool):
-        self.last_move_info = None # 每回合開始時重置
+        self.last_move_info = None
         score_to_add = 0
-        
         if is_t_spin:
             score_to_add = self.config.T_SPIN_SCORE_MAPPING.get(num_cleared, 0) * self.level
             line_names = {1: "SINGLE", 2: "DOUBLE", 3: "TRIPLE"}
-            if num_cleared > 0:
-                self.last_move_info = f"T-SPIN {line_names.get(num_cleared)}"
-            else:
-                self.last_move_info = "T-SPIN"
-        
+            self.last_move_info = f"T-SPIN {line_names.get(num_cleared, '')}".strip()
         elif num_cleared > 0:
             score_to_add = self.config.SCORE_MAPPING.get(num_cleared, 0) * self.level
-            if num_cleared == 4:
-                self.last_move_info = "TETRIS!"
-
+            if num_cleared == 4: self.last_move_info = "TETRIS!"
         self.score += score_to_add
-        
         if self.combo_counter > 0 and num_cleared > 0:
-            combo_score = self.config.COMBO_BONUS_SCORE * self.combo_counter * self.level
-            self.score += combo_score
-            
+            self.score += self.config.COMBO_BONUS_SCORE * self.combo_counter * self.level
         self.lines_cleared += num_cleared
         self.level = 1 + (self.lines_cleared // self.config.LINES_TO_LEVEL_UP)
 
@@ -269,13 +223,13 @@ class TetrisModel:
         return state
 
 # ==============================================================================
-# --- 視圖 (View): 新增特殊招式文字顯示 ---
+# --- 視圖 (View): (此部分無變更) ---
 # ==============================================================================
 class TetrisView:
     def __init__(self, master: tk.Tk, config: GameConfig):
         self.master = master
         self.config = config
-        self.master.title("Modern Tetris 2025 - Final")
+        self.master.title("Modern Tetris 2025 - Final v2")
         self.master.configure(bg='#1A1A1A')
         self.master.resizable(False, False)
         self._center_window()
@@ -360,25 +314,19 @@ class TetrisView:
         self.canvas.create_text(x_base, 20, text="TETRIS", font=self.title_font, fill="#00F0F0", anchor='nw')
         self._draw_preview_box(x_base, 90, "HOLD", state['held_piece_shape_data'])
         self._draw_preview_box(x_base, 200, "NEXT", state['next_piece_shape_data'])
-
         ui_items = {"SCORE": state['score'], "LEVEL": state['level'], "LINES": state['lines_cleared']}
         y_offset = 320
         for header, value in ui_items.items():
             self.canvas.create_text(x_base, y_offset, text=header, font=self.info_font_header, fill="#CCCCCC", anchor='nw')
             self.canvas.create_text(x_base, y_offset + 20, text=str(value), font=self.info_font_value, fill="white", anchor='nw')
             y_offset += 60
-        
-        # Combo 和 特殊招式 顯示
         y_offset += 20
         move_info_text = state['last_move_info']
         if move_info_text:
             self.canvas.create_text(x_base, y_offset, text=move_info_text, font=self.special_move_font, fill="#39FF14", anchor='nw')
             y_offset += 30
-
         if state['combo'] > 0:
-            combo_text = f"COMBO x{state['combo'] + 1}"
-            self.canvas.create_text(x_base, y_offset, text=combo_text, font=self.special_move_font, fill="#FFD700", anchor='nw')
-
+            self.canvas.create_text(x_base, y_offset, text=f"COMBO x{state['combo'] + 1}", font=self.special_move_font, fill="#FFD700", anchor='nw')
 
     def _draw_preview_box(self, x: int, y: int, title: str, piece_data: Optional[Dict[str, Any]]):
         self.canvas.create_text(x, y, text=title, font=self.info_font_header, fill="#CCCCCC", anchor='nw')
@@ -402,7 +350,7 @@ class TetrisView:
         self.canvas.create_text(w/2, h/2 + 20, text="Press 'R' to Restart", font=self.info_font_value, fill="white")
 
 # ==============================================================================
-# --- 控制器 (Controller): 更新按鍵綁定 ---
+# --- 控制器 (Controller): *** 此處有變更 *** ---
 # ==============================================================================
 class TetrisController:
     def __init__(self, master: tk.Tk):
@@ -415,6 +363,7 @@ class TetrisController:
         self.start_game()
 
     def _bind_events(self):
+        """綁定所有鍵盤事件"""
         self.master.bind("<KeyPress-Left>", self._handle_key_press)
         self.master.bind("<KeyPress-Right>", self._handle_key_press)
         self.master.bind("<KeyPress-Down>", self._handle_key_press)
@@ -423,7 +372,10 @@ class TetrisController:
         self.master.bind("<KeyPress-R>", self._handle_key_press)
         self.master.bind("<KeyPress-Control_L>", self._handle_key_press)
         self.master.bind("<KeyPress-Control_R>", self._handle_key_press)
-        # 新增 Z/X 旋轉綁定
+        
+        # *** 變更點 1: 重新綁定上方向鍵 ***
+        self.master.bind("<KeyPress-Up>", self._handle_key_press)
+        
         self.master.bind("<KeyPress-z>", self._handle_key_press)
         self.master.bind("<KeyPress-Z>", self._handle_key_press)
         self.master.bind("<KeyPress-x>", self._handle_key_press)
@@ -434,15 +386,19 @@ class TetrisController:
             if event.keysym.lower() == 'r': self.start_game()
             return
         
-        key = event.keysym.lower() # 轉換為小寫以簡化判斷
+        key = event.keysym.lower()
         if key == "left": self.model.move(-1, 0)
         elif key == "right": self.model.move(1, 0)
         elif key == "down": self.soft_drop()
         elif key == "space": self.model.hard_drop()
-        elif key == "z": self.model.rotate(clockwise=False) # Z: 逆時針
-        elif key == "x": self.model.rotate(clockwise=True)  # X: 順時針
+        
+        # *** 變更點 2: 將 'up' 加入順時針旋轉 ***
+        elif key == "up" or key == "x": self.model.rotate(clockwise=True)
+        elif key == "z": self.model.rotate(clockwise=False)
+
         elif "control" in key: self.model.hold_piece()
         
+        # 每次操作後都立即重繪畫面，提供即時反饋
         self.view.render(self.model.get_game_state())
 
     def soft_drop(self):
@@ -454,12 +410,20 @@ class TetrisController:
         self._game_loop()
 
     def _game_loop(self):
+        """遊戲主循環"""
         if not self.model.game_over:
-            self.model.move(0, 1) # 自動下降
+            
+            # *** 變更點 3: 方塊觸底時自動鎖定 ***
+            # 嘗試自動下降，如果失敗（已觸底），則立即鎖定方塊
+            if not self.model.move(0, 1):
+                self.model.lock_piece()
+
             self.view.render(self.model.get_game_state())
+            
             drop_speed = int(self.config.INITIAL_SPEED * (self.config.SPEED_DECREASE_FACTOR**(self.model.level-1)))
             self.game_loop_id = self.master.after(drop_speed, self._game_loop)
         else:
+            # 遊戲結束時，確保最終畫面被渲染
             self.view.render(self.model.get_game_state())
 
 # ==============================================================================
