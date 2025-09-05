@@ -1,390 +1,502 @@
-import os
-import time
+# main.py
+
+import tkinter as tk
+from tkinter import messagebox, font
+from PIL import Image, ImageTk, ImageDraw
 import random
+import collections
 
-try:
-    # 這是控制鍵盤輸入的函式庫，需要額外安裝
-    # 您可以在終端機中執行: pip install keyboard
-    import keyboard
-except ImportError:
-    print("錯誤：找不到 'keyboard' 函式庫。")
-    print("請使用 'pip install keyboard' 命令來安裝它。")
-    print("注意：在某些作業系統 (如 Linux) 上，此命令可能需要 root 權限 (sudo)。")
-    exit()
+# --- 專案設定與常數 (Project Settings & Constants) ---
+class GameConfig:
+    # 遊戲區域尺寸 (單位: 方塊)
+    BOARD_WIDTH = 10
+    BOARD_HEIGHT = 20
+    
+    # 每個方塊的像素大小
+    BLOCK_SIZE = 32
+    
+    # 遊戲面板邊框與 UI 元素寬度
+    BORDER_WIDTH = 5
+    SIDE_PANEL_WIDTH = 200
 
-# --- Model (模型) ---
-# 負責所有遊戲的核心邏輯、數據和規則
+    # 視窗尺寸
+    WINDOW_WIDTH = BOARD_WIDTH * BLOCK_SIZE + 2 * BORDER_WIDTH + SIDE_PANEL_WIDTH
+    WINDOW_HEIGHT = BOARD_HEIGHT * BLOCK_SIZE + 2 * BORDER_WIDTH
 
+    # 遊戲速度 (初始掉落延遲，單位：毫秒)
+    INITIAL_SPEED = 800
+    SPEED_INCREMENT_FACTOR = 0.9 # 每升一級，速度變為原本的 90%
+    
+    # 方塊形狀與顏色定義 (Tetrominoes)
+    # 使用現代化的顏色配置
+    SHAPES = {
+        'I': {'shape': [[1, 1, 1, 1]], 'color': '#00F0F0', 'pivot': (0, 1.5)},
+        'J': {'shape': [[1, 0, 0], [1, 1, 1]], 'color': '#0000F0', 'pivot': (1, 1)},
+        'L': {'shape': [[0, 0, 1], [1, 1, 1]], 'color': '#F0A000', 'pivot': (1, 1)},
+        'O': {'shape': [[1, 1], [1, 1]], 'color': '#F0F000', 'pivot': (0.5, 0.5)},
+        'S': {'shape': [[0, 1, 1], [1, 1, 0]], 'color': '#00F000', 'pivot': (1, 1)},
+        'T': {'shape': [[0, 1, 0], [1, 1, 1]], 'color': '#A000F0', 'pivot': (1, 1)},
+        'Z': {'shape': [[1, 1, 0], [0, 1, 1]], 'color': '#F00000', 'pivot': (1, 1)}
+    }
+
+    # 分數系統
+    SCORE_MAP = {1: 100, 2: 300, 3: 500, 4: 800} # 消 1-4 行的分數
+    LEVEL_UP_LINES = 10 # 每消除 10 行升一級
+
+# ==============================================================================
+# --- Model: 處理所有遊戲邏輯 (Handles all game logic) ---
+# ==============================================================================
 class TetrisModel:
-    """
-    管理俄羅斯方塊遊戲的數據和邏輯
-    """
-    def __init__(self, width=12, height=22):
-        self.width = width
-        self.height = height
-        # 定義各種方塊的形狀和顏色
-        self.shapes = [
-            ([[1, 1, 1, 1]], 1),                      # I (青色)
-            ([[1, 1, 0], [0, 1, 1]], 2),              # Z (紅色)
-            ([[0, 1, 1], [1, 1, 0]], 3),              # S (綠色)
-            ([[1, 1, 1], [0, 1, 0]], 4),              # T (紫色)
-            ([[1, 1, 1], [1, 0, 0]], 5),              # L (橘色)
-            ([[1, 1, 1], [0, 0, 1]], 6),              # J (藍色)
-            ([[1, 1], [1, 1]], 7)                     # O (黃色)
-        ]
-        self.colors = [
-            '\033[97m',  # 0: 背景 (白色)
-            '\033[96m',  # 1: I (青色)
-            '\033[91m',  # 2: Z (紅色)
-            '\033[92m',  # 3: S (綠色)
-            '\033[95m',  # 4: T (紫色)
-            '\033[93m',  # 5: L (橘色)
-            '\033[94m',  # 6: J (藍色)
-            '\033[33m',  # 7: O (黃色)
-            '\033[90m'   # 8: 邊界 (灰色)
-        ]
+    def __init__(self):
+        self.config = GameConfig()
         self.reset()
 
     def reset(self):
-        """
-        重置遊戲狀態到初始值
-        """
-        self.board = [[0] * self.width for _ in range(self.height)]
+        """初始化或重置遊戲狀態"""
+        self.board = [[None for _ in range(self.config.BOARD_WIDTH)] for _ in range(self.config.BOARD_HEIGHT)]
         self.score = 0
-        self.level = 1
         self.lines_cleared = 0
+        self.level = 1
         self.game_over = False
-        self.paused = False
-        self.new_piece()
-        self.new_piece() # 產生當前和下一個方塊
+        self.current_piece = None
+        self.next_piece_shape = self._get_random_shape()
+        self.spawn_new_piece()
 
-    def new_piece(self):
-        """
-        產生一個新的方塊
-        """
-        self.current_piece = getattr(self, 'next_piece', self.get_random_piece())
-        self.next_piece = self.get_random_piece()
-        self.current_piece_x = self.width // 2 - len(self.current_piece['shape'][0]) // 2
-        self.current_piece_y = 0
-        # 如果新方塊一產生就碰撞，表示遊戲結束
-        if self.check_collision(self.current_piece['shape'], (self.current_piece_x, self.current_piece_y)):
+    def _get_random_shape(self):
+        """隨機獲取一個方塊形狀"""
+        return random.choice(list(self.config.SHAPES.keys()))
+
+    def spawn_new_piece(self):
+        """生成一個新的方塊"""
+        self.current_piece = {
+            'shape_name': self.next_piece_shape,
+            'matrix': self.config.SHAPES[self.next_piece_shape]['shape'],
+            'color': self.config.SHAPES[self.next_piece_shape]['color'],
+            'pivot': self.config.SHAPES[self.next_piece_shape]['pivot'],
+            'x': self.config.BOARD_WIDTH // 2 - len(self.config.SHAPES[self.next_piece_shape]['shape'][0]) // 2,
+            'y': 0
+        }
+        self.next_piece_shape = self._get_random_shape()
+
+        # 檢查生成點是否合法，若不合法則遊戲結束
+        if not self._is_valid_position(self.current_piece['matrix'], self.current_piece['x'], self.current_piece['y']):
             self.game_over = True
 
-    def get_random_piece(self):
-        """
-        從形狀列表中隨機選擇一個方塊
-        """
-        shape, color_index = random.choice(self.shapes)
-        return {'shape': shape, 'color': color_index}
-
-    def check_collision(self, shape, pos):
-        """
-        檢查指定位置的方塊是否會發生碰撞
-        """
-        px, py = pos
-        for y, row in enumerate(shape):
-            for x, cell in enumerate(row):
-                if cell:
-                    board_y = y + py
-                    board_x = x + px
-                    if (board_y >= self.height or
-                        board_x < 0 or
-                        board_x >= self.width or
-                        self.board[board_y][board_x] != 0):
-                        return True
+    def move(self, dx, dy):
+        """移動當前方塊"""
+        if self.game_over:
+            return False
+        
+        new_x = self.current_piece['x'] + dx
+        new_y = self.current_piece['y'] + dy
+        if self._is_valid_position(self.current_piece['matrix'], new_x, new_y):
+            self.current_piece['x'] = new_x
+            self.current_piece['y'] = new_y
+            return True
         return False
 
-    def move(self, dx):
-        """
-        左右移動當前的方塊
-        """
-        if not self.game_over and not self.paused:
-            new_x = self.current_piece_x + dx
-            if not self.check_collision(self.current_piece['shape'], (new_x, self.current_piece_y)):
-                self.current_piece_x = new_x
-
-    def drop(self):
-        """
-        向下移動方塊，直到發生碰撞
-        """
-        if not self.game_over and not self.paused:
-            while not self.check_collision(self.current_piece['shape'], (self.current_piece_x, self.current_piece_y + 1)):
-                self.current_piece_y += 1
-            self.lock_piece()
-
-    def soft_drop(self):
-        """
-        加速下降（軟降）
-        """
-        if not self.game_over and not self.paused:
-            if not self.check_collision(self.current_piece['shape'], (self.current_piece_x, self.current_piece_y + 1)):
-                 self.current_piece_y += 1
-                 # 軟降給予少量分數
-                 self.score += 1
-            else:
-                self.lock_piece()
-
     def rotate(self):
-        """
-        旋轉方塊
-        """
-        if not self.game_over and not self.paused:
-            shape = self.current_piece['shape']
-            rotated_shape = [list(row) for row in zip(*shape[::-1])]
-            # 嘗試 "牆踢" 來避免旋轉時卡住
-            kick_offsets = [ (0, 0), (1, 0), (-1, 0), (2, 0), (-2, 0), (0, -1) ]
-            for ox, oy in kick_offsets:
-                new_x = self.current_piece_x + ox
-                new_y = self.current_piece_y + oy
-                if not self.check_collision(rotated_shape, (new_x, new_y)):
-                    self.current_piece['shape'] = rotated_shape
-                    self.current_piece_x = new_x
-                    self.current_piece_y = new_y
-                    return
+        """旋轉當前方塊"""
+        if self.game_over or self.current_piece['shape_name'] == 'O':
+            return
+
+        matrix = self.current_piece['matrix']
+        pivot_y, pivot_x = self.current_piece['pivot']
+        
+        # 轉置矩陣並反轉行以實現順時針旋轉
+        rotated_matrix = [list(row) for row in zip(*matrix[::-1])]
+
+        # 根據 pivot 計算旋轉後的位置
+        # 這是一個簡化的牆踢 (Wall Kick) 邏輯
+        old_h, old_w = len(matrix), len(matrix[0])
+        new_h, new_w = len(rotated_matrix), len(rotated_matrix[0])
+        
+        # 旋轉後的 pivot 點在新矩陣中的相對位置
+        new_pivot_y, new_pivot_x = pivot_x, new_h - 1 - pivot_y
+        
+        # 計算位移
+        dx = round(pivot_x - new_pivot_x)
+        dy = round(pivot_y - new_pivot_y)
+        
+        # 嘗試標準旋轉
+        if self._is_valid_position(rotated_matrix, self.current_piece['x'] + dx, self.current_piece['y'] + dy):
+            self.current_piece['matrix'] = rotated_matrix
+            self.current_piece['x'] += dx
+            self.current_piece['y'] += dy
+            # 更新 pivot
+            self.current_piece['pivot'] = (new_pivot_y, new_pivot_x)
+        # 可以在此處添加更複雜的牆踢邏輯 (SRS - Super Rotation System)
+        # 例如，檢查左右移動一格是否可行
+
+    def hard_drop(self):
+        """硬降，方塊直接到底"""
+        if self.game_over:
+            return
+        while self.move(0, 1):
+            pass
+        self.lock_piece()
+
+    def _is_valid_position(self, matrix, x, y):
+        """檢查指定位置是否合法"""
+        for r, row in enumerate(matrix):
+            for c, cell in enumerate(row):
+                if cell:
+                    board_x, board_y = x + c, y + r
+                    if not (0 <= board_x < self.config.BOARD_WIDTH and 0 <= board_y < self.config.BOARD_HEIGHT):
+                        return False # 超出邊界
+                    if self.board[board_y][board_x] is not None:
+                        return False # 與已存在的方塊碰撞
+        return True
 
     def lock_piece(self):
-        """
-        將當前方塊固定在遊戲版上
-        """
-        shape = self.current_piece['shape']
-        for y, row in enumerate(shape):
-            for x, cell in enumerate(row):
+        """將當前方塊固定在遊戲版上"""
+        if self.game_over:
+            return
+            
+        matrix = self.current_piece['matrix']
+        x, y = self.current_piece['x'], self.current_piece['y']
+
+        for r, row in enumerate(matrix):
+            for c, cell in enumerate(row):
                 if cell:
-                    self.board[y + self.current_piece_y][x + self.current_piece_x] = self.current_piece['color']
+                    self.board[y + r][x + c] = self.current_piece['color']
+        
         self.clear_lines()
-        self.new_piece()
+        self.spawn_new_piece()
 
     def clear_lines(self):
-        """
-        檢查並清除已滿的行
-        """
-        lines_to_clear = [i for i, row in enumerate(self.board) if all(cell != 0 for cell in row)]
+        """檢查並清除已滿的行"""
+        lines_to_clear = []
+        for r, row in enumerate(self.board):
+            if all(cell is not None for cell in row):
+                lines_to_clear.append(r)
         
         if lines_to_clear:
+            # 從上往下清除
+            for r in lines_to_clear:
+                del self.board[r]
+                self.board.insert(0, [None for _ in range(self.config.BOARD_WIDTH)])
+            
             num_cleared = len(lines_to_clear)
-            self.lines_cleared += num_cleared
-            # 根據一次清除的行數給予不同分數
-            score_map = {1: 100, 2: 300, 3: 500, 4: 800}
-            self.score += score_map.get(num_cleared, 0) * self.level
-            
-            # 從上到下刪除已滿的行
-            for index in sorted(lines_to_clear, reverse=True):
-                del self.board[index]
-                self.board.insert(0, [0] * self.width)
-            
-            # 更新等級
-            self.level = 1 + self.lines_cleared // 10
+            self._update_score(num_cleared)
 
-    def update(self):
-        """
-        遊戲狀態的主要更新函數，由計時器驅動
-        """
-        if not self.game_over and not self.paused:
-            if not self.check_collision(self.current_piece['shape'], (self.current_piece_x, self.current_piece_y + 1)):
-                self.current_piece_y += 1
-            else:
-                self.lock_piece()
+    def _update_score(self, num_cleared):
+        """更新分數與等級"""
+        # 根據消除行數給予基礎分數，並乘以等級
+        self.score += self.config.SCORE_MAP.get(num_cleared, 0) * self.level
+        self.lines_cleared += num_cleared
+        
+        # 檢查是否升級
+        new_level = 1 + self.lines_cleared // self.config.LEVEL_UP_LINES
+        if new_level > self.level:
+            self.level = new_level
+            # 可以在此處觸發速度更新事件
 
-    def toggle_pause(self):
-        """
-        切換暫停狀態
-        """
-        if not self.game_over:
-            self.paused = not self.paused
+    def get_game_state(self):
+        """獲取遊戲當前狀態，用於給 View 渲染"""
+        # 創建一個遊戲板的深拷貝，並畫上當前的方塊
+        display_board = [row[:] for row in self.board]
+        if self.current_piece and not self.game_over:
+            matrix = self.current_piece['matrix']
+            x, y = self.current_piece['x'], self.current_piece['y']
+            color = self.current_piece['color']
+            for r, row in enumerate(matrix):
+                for c, cell in enumerate(row):
+                    if cell:
+                        display_board[y + r][x + c] = color
 
-# --- View (視圖) ---
-# 負責將模型的數據渲染到螢幕上
+        return {
+            'board': display_board,
+            'score': self.score,
+            'level': self.level,
+            'lines_cleared': self.lines_cleared,
+            'next_piece': self.config.SHAPES[self.next_piece_shape],
+            'game_over': self.game_over
+        }
 
+
+# ==============================================================================
+# --- View: 負責所有 GUI 繪製 (Handles all GUI drawing) ---
+# ==============================================================================
 class TetrisView:
-    """
-    負責在主控台渲染遊戲畫面
-    """
-    def __init__(self, model):
-        self.model = model
-        self.block_char = "■ "  # 使用兩個字元讓方塊更接近正方形
+    def __init__(self, master, config):
+        self.master = master
+        self.config = config
+        self.master.title("Modern Tetris 2025")
+        
+        # 設定視窗置中
+        self._center_window()
+        
+        self.master.configure(bg='#1A1A1A')
+        self.master.resizable(False, False)
 
-    def clear_screen(self):
-        """
-        清除主控台畫面
-        """
-        os.system('cls' if os.name == 'nt' else 'clear')
+        # 創建主畫布
+        self.canvas = tk.Canvas(
+            master,
+            width=self.config.WINDOW_WIDTH,
+            height=self.config.WINDOW_HEIGHT,
+            bg='#1A1A1A',
+            highlightthickness=0
+        )
+        self.canvas.pack()
 
-    def render(self):
-        """
-        渲染整個遊戲畫面
-        """
-        self.clear_screen()
+        # 設定字體
+        self.title_font = font.Font(family="Segoe UI", size=24, weight="bold")
+        self.info_font = font.Font(family="Segoe UI", size=14)
+        self.game_over_font = font.Font(family="Segoe UI", size=48, weight="bold")
+
+        self.block_cache = {} # 緩存方塊圖像以提高性能
         
-        # 創建一個臨時的顯示板來繪製當前移動的方塊
-        display_board = [row[:] for row in self.model.board]
+    def _center_window(self):
+        """將視窗放置在螢幕中央"""
+        screen_width = self.master.winfo_screenwidth()
+        screen_height = self.master.winfo_screenheight()
+        x = (screen_width // 2) - (self.config.WINDOW_WIDTH // 2)
+        y = (screen_height // 2) - (self.config.WINDOW_HEIGHT // 2)
+        self.master.geometry(f'{self.config.WINDOW_WIDTH}x{self.config.WINDOW_HEIGHT}+{x}+{y}')
+
+    def _create_rounded_rectangle(self, x1, y1, x2, y2, radius, **kwargs):
+        """輔助函式：在 Canvas 上繪製圓角矩形"""
+        points = [x1 + radius, y1,
+                  x1 + radius, y1,
+                  x2 - radius, y1,
+                  x2 - radius, y1,
+                  x2, y1,
+                  x2, y1 + radius,
+                  x2, y1 + radius,
+                  x2, y2 - radius,
+                  x2, y2 - radius,
+                  x2, y2,
+                  x2 - radius, y2,
+                  x2 - radius, y2,
+                  x1 + radius, y2,
+                  x1 + radius, y2,
+                  x1, y2,
+                  x1, y2 - radius,
+                  x1, y2 - radius,
+                  x1, y1 + radius,
+                  x1, y1 + radius,
+                  x1, y1]
+        return self.canvas.create_polygon(points, **kwargs, smooth=True)
+
+    def _get_block_image(self, color):
+        """創建或從快取中獲取帶有現代感漸層和高光的方塊圖像"""
+        if color in self.block_cache:
+            return self.block_cache[color]
+
+        size = self.config.BLOCK_SIZE
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # 主體顏色
+        draw.rounded_rectangle((2, 2, size-2, size-2), radius=5, fill=color)
         
-        piece_shape = self.model.current_piece['shape']
-        piece_color = self.model.current_piece['color']
-        px, py = self.model.current_piece_x, self.model.current_piece_y
+        # 頂部高光
+        highlight_color = tuple(min(255, int(c * 1.5)) for c in Image.new('RGB', (1,1), color).getpixel((0,0)))
+        draw.line([(4, 4), (size - 5, 4)], fill=highlight_color, width=2)
         
-        for y, row in enumerate(piece_shape):
-            for x, cell in enumerate(row):
+        # 內部陰影
+        shadow_color = tuple(int(c * 0.6) for c in Image.new('RGB', (1,1), color).getpixel((0,0)))
+        draw.line([(4, size - 5), (size - 5, size - 5)], fill=shadow_color, width=2)
+        draw.line([(size - 5, 4), (size - 5, size - 5)], fill=shadow_color, width=2)
+
+        photo_img = ImageTk.PhotoImage(img)
+        self.block_cache[color] = photo_img
+        return photo_img
+
+    def draw(self, state):
+        """根據遊戲狀態繪製整個畫面"""
+        self.canvas.delete("all")
+        self._draw_background()
+        self._draw_board(state['board'])
+        self._draw_ui(state)
+        if state['game_over']:
+            self._draw_game_over()
+        
+    def _draw_background(self):
+        """繪製遊戲背景和邊框"""
+        # 主遊戲區背景
+        self.canvas.create_rectangle(
+            self.config.BORDER_WIDTH, self.config.BORDER_WIDTH,
+            self.config.BORDER_WIDTH + self.config.BOARD_WIDTH * self.config.BLOCK_SIZE,
+            self.config.BORDER_WIDTH + self.config.BOARD_HEIGHT * self.config.BLOCK_SIZE,
+            fill='#101010', outline=''
+        )
+        # 側邊欄背景
+        self._create_rounded_rectangle(
+            self.config.WINDOW_WIDTH - self.config.SIDE_PANEL_WIDTH + 10, self.config.BORDER_WIDTH,
+            self.config.WINDOW_WIDTH - self.config.BORDER_WIDTH, 
+            self.config.WINDOW_HEIGHT - self.config.BORDER_WIDTH,
+            radius=10, fill='#252525'
+        )
+
+    def _draw_board(self, board):
+        """繪製遊戲主區域的方塊"""
+        for y, row in enumerate(board):
+            for x, color in enumerate(row):
+                if color:
+                    px = self.config.BORDER_WIDTH + x * self.config.BLOCK_SIZE
+                    py = self.config.BORDER_WIDTH + y * self.config.BLOCK_SIZE
+                    block_img = self._get_block_image(color)
+                    self.canvas.create_image(px, py, image=block_img, anchor='nw')
+
+    def _draw_ui(self, state):
+        """繪製右側的 UI 資訊"""
+        x_base = self.config.WINDOW_WIDTH - self.config.SIDE_PANEL_WIDTH + 25
+        y_base = 40
+
+        # 標題
+        self.canvas.create_text(x_base, y_base, text="TETRIS", font=self.title_font, fill="#00F0F0", anchor='nw')
+        y_base += 80
+        
+        # 分數
+        self.canvas.create_text(x_base, y_base, text="SCORE", font=self.info_font, fill="#CCCCCC", anchor='nw')
+        self.canvas.create_text(x_base + 150, y_base + 30, text=f"{state['score']}", font=self.info_font, fill="white", anchor='ne')
+        y_base += 80
+
+        # 等級
+        self.canvas.create_text(x_base, y_base, text="LEVEL", font=self.info_font, fill="#CCCCCC", anchor='nw')
+        self.canvas.create_text(x_base + 150, y_base + 30, text=f"{state['level']}", font=self.info_font, fill="white", anchor='ne')
+        y_base += 80
+
+        # 已消除行數
+        self.canvas.create_text(x_base, y_base, text="LINES", font=self.info_font, fill="#CCCCCC", anchor='nw')
+        self.canvas.create_text(x_base + 150, y_base + 30, text=f"{state['lines_cleared']}", font=self.info_font, fill="white", anchor='ne')
+        y_base += 100
+
+        # 下一個方塊
+        self.canvas.create_text(x_base, y_base, text="NEXT", font=self.info_font, fill="#CCCCCC", anchor='nw')
+        next_piece = state['next_piece']
+        matrix = next_piece['shape']
+        color = next_piece['color']
+        
+        for r, row in enumerate(matrix):
+            for c, cell in enumerate(row):
                 if cell:
-                    if 0 <= py + y < self.model.height and 0 <= px + x < self.model.width:
-                        display_board[py + y][px + x] = piece_color
+                    px = x_base + 40 + c * self.config.BLOCK_SIZE * 0.8
+                    py = y_base + 40 + r * self.config.BLOCK_SIZE * 0.8
+                    # 縮小預覽方塊
+                    img_small = self._get_block_image(color).subsample(5, 5) # 創建一個縮小版的圖片
+                    
+                    # 這裡需要一個更穩健的方法來縮放圖片，但為簡化直接用 tk 的 subsample
+                    # 為了更高品質的縮放，最好是重新生成一個小尺寸的 Pillow Image
+                    
+                    draw_size = self.config.BLOCK_SIZE * 0.7
+                    temp_img = Image.new("RGBA", (int(draw_size), int(draw_size)), (0, 0, 0, 0))
+                    draw = ImageDraw.Draw(temp_img)
+                    draw.rounded_rectangle((1, 1, draw_size-1, draw_size-1), radius=4, fill=color)
+                    
+                    photo_img = ImageTk.PhotoImage(temp_img)
+                    # 為避免被垃圾回收，需要儲存引用
+                    if not hasattr(self, '_preview_imgs'): self._preview_imgs = []
+                    self._preview_imgs.append(photo_img)
 
-        # 頂部邊界
-        print(self.model.colors[8] + "╔" + "═" * (self.model.width * 2) + "╗" + " Next Block" + self.model.colors[0])
+                    self.canvas.create_image(px, py, image=photo_img, anchor='nw')
 
-        for y, row in enumerate(display_board):
-            # 左邊界
-            print(self.model.colors[8] + "║" + self.model.colors[0], end="")
-            for cell in row:
-                if cell == 0:
-                    print("  ", end="") # 空白格
-                else:
-                    print(self.model.colors[cell] + self.block_char + self.model.colors[0], end="")
-            # 右邊界
-            print(self.model.colors[8] + "║" + self.model.colors[0], end="")
-            
-            # 繪製右側資訊欄
-            if y == 1:
-                self.print_next_piece(y)
-            elif y == 6:
-                 print(f" Level: {self.model.level}", end="")
-            elif y == 7:
-                 print(f" Score: {self.model.score}", end="")
-            elif y == 8:
-                 print(f" Lines: {self.model.lines_cleared}", end="")
-            elif y == 11:
-                 print(" Controls:", end="")
-            elif y == 12:
-                 print("   A: Left", end="")
-            elif y == 13:
-                 print("   D: Right", end="")
-            elif y == 14:
-                 print("   S: Soft Drop", end="")
-            elif y == 15:
-                 print("   W: Rotate", end="")
-            elif y == 16:
-                 print(" Space: Hard Drop", end="")
-            elif y == 17:
-                 print("   P: Pause", end="")
-            elif y == 18:
-                 print("   Q: Quit", end="")
-            
-            print() # 換行
+    def _draw_game_over(self):
+        """繪製遊戲結束畫面"""
+        # 半透明遮罩
+        self.canvas.create_rectangle(
+            0, 0, self.config.WINDOW_WIDTH, self.config.WINDOW_HEIGHT,
+            fill='black', stipple='gray50'
+        )
+        # GAME OVER 文字
+        self.canvas.create_text(
+            self.config.WINDOW_WIDTH / 2, self.config.WINDOW_HEIGHT / 2 - 50,
+            text="GAME OVER", font=self.game_over_font, fill="red"
+        )
+        self.canvas.create_text(
+            self.config.WINDOW_WIDTH / 2, self.config.WINDOW_HEIGHT / 2 + 20,
+            text="Press 'R' to Restart", font=self.info_font, fill="white"
+        )
 
-        # 底部邊界
-        print(self.model.colors[8] + "╚" + "═" * (self.model.width * 2) + "╝" + self.model.colors[0])
-        
-        if self.model.paused:
-            print("\n--- PAUSED ---")
-        if self.model.game_over:
-            print("\n--- GAME OVER ---")
-            print(f"Final Score: {self.model.score}")
-
-    def print_next_piece(self, start_y):
-        """
-        在右側資訊欄繪製下一個方塊的預覽
-        """
-        next_shape = self.model.next_piece['shape']
-        next_color = self.model.next_piece['color']
-        
-        for y, row in enumerate(next_shape):
-            # 為了對齊，在每行前面加一個空格
-            print(" ", end="")
-            for x, cell in enumerate(row):
-                if cell:
-                    print(self.model.colors[next_color] + self.block_char + self.model.colors[0], end="")
-                else:
-                    print("  ", end="")
-            
-            # 如果不是最後一行，就換行並移動到正確的垂直位置
-            if y < len(next_shape) - 1:
-                print()
-                # 重新打印邊界，保持畫面完整
-                print(self.model.colors[8] + "║" + " " * (self.model.width * 2 + 1) + "║" + self.model.colors[0], end="")
-                
-# --- Controller (控制器) ---
-# 負責處理用戶輸入、管理遊戲循環和協調模型與視圖
-
+# ==============================================================================
+# --- Controller: 處理使用者輸入並連接 Model 和 View ---
+# ==============================================================================
 class TetrisController:
-    """
-    處理用戶輸入並管理遊戲主循環
-    """
-    def __init__(self, model, view):
-        self.model = model
-        self.view = view
-        self.last_update_time = time.time()
-        self.setup_input_hooks()
-        self.running = True
+    def __init__(self, master):
+        self.master = master
+        self.config = GameConfig()
+        
+        self.model = TetrisModel()
+        self.view = TetrisView(master, self.config)
+        
+        self.bind_events()
+        
+        self.drop_speed = self.config.INITIAL_SPEED
+        self.game_loop_id = None
+        self.start_game()
 
-    def get_fall_speed(self):
-        """
-        根據等級計算方塊下落速度
-        """
-        return max(0.1, 0.8 - (self.model.level - 1) * 0.05)
+    def bind_events(self):
+        """綁定鍵盤事件"""
+        self.master.bind("<KeyPress-Left>", self.handle_key_press)
+        self.master.bind("<KeyPress-Right>", self.handle_key_press)
+        self.master.bind("<KeyPress-Down>", self.handle_key_press)
+        self.master.bind("<KeyPress-Up>", self.handle_key_press)
+        self.master.bind("<KeyPress-space>", self.handle_key_press)
+        self.master.bind("<KeyPress-r>", self.handle_key_press)
+        self.master.bind("<KeyPress-R>", self.handle_key_press)
 
-    def setup_input_hooks(self):
-        """
-        設定鍵盤事件的響應函數
-        """
-        keyboard.on_press_key('a', lambda _: self.model.move(-1))
-        keyboard.on_press_key('left', lambda _: self.model.move(-1))
-        
-        keyboard.on_press_key('d', lambda _: self.model.move(1))
-        keyboard.on_press_key('right', lambda _: self.model.move(1))
-        
-        keyboard.on_press_key('s', lambda _: self.model.soft_drop())
-        keyboard.on_press_key('down', lambda _: self.model.soft_drop())
-        
-        keyboard.on_press_key('w', lambda _: self.model.rotate())
-        keyboard.on_press_key('up', lambda _: self.model.rotate())
-        
-        keyboard.on_press_key('space', lambda _: self.model.drop())
-        
-        keyboard.on_press_key('p', lambda _: self.model.toggle_pause())
-        
-        keyboard.on_press_key('q', lambda _: self.quit_game())
+    def handle_key_press(self, event):
+        """處理按鍵事件"""
+        if self.model.game_over:
+            if event.keysym.lower() == 'r':
+                self.start_game()
+            return
 
-    def quit_game(self):
-        """
-        設置旗標以退出遊戲
-        """
-        self.running = False
+        if event.keysym == "Left":
+            self.model.move(-1, 0)
+        elif event.keysym == "Right":
+            self.model.move(1, 0)
+        elif event.keysym == "Down": # 軟降
+            if self.model.move(0, 1):
+                # 軟降加分
+                self.model.score += 1
+        elif event.keysym == "Up":
+            self.model.rotate()
+        elif event.keysym == "space": # 硬降
+            self.model.hard_drop()
 
-    def run(self):
-        """
-        遊戲主循環
-        """
-        while self.running and not self.model.game_over:
-            current_time = time.time()
-            delta_time = current_time - self.last_update_time
+        self.view.draw(self.model.get_game_state())
+
+    def start_game(self):
+        """開始或重新開始遊戲"""
+        if self.game_loop_id:
+            self.master.after_cancel(self.game_loop_id)
+        
+        self.model.reset()
+        self.update_speed()
+        self.game_loop()
+
+    def update_speed(self):
+        """根據等級更新掉落速度"""
+        self.drop_speed = self.config.INITIAL_SPEED * (self.config.SPEED_INCREMENT_FACTOR ** (self.model.level - 1))
+
+    def game_loop(self):
+        """遊戲主循環"""
+        if not self.model.game_over:
+            # 方塊自動下落
+            if not self.model.move(0, 1):
+                # 如果無法再向下移動，則鎖定方塊
+                # TODO: 可以在此加入鎖定延遲 (Lock Delay)
+                self.model.lock_piece()
             
-            if delta_time > self.get_fall_speed():
-                self.model.update()
-                self.last_update_time = current_time
+            # 檢查是否需要更新速度
+            if int(self.drop_speed) != int(self.config.INITIAL_SPEED * (self.config.SPEED_INCREMENT_FACTOR ** (self.model.level - 1))):
+                self.update_speed()
 
-            self.view.render()
+            self.view.draw(self.model.get_game_state())
             
-            # 短暫休眠以降低 CPU 使用率，同時保持響應性
-            time.sleep(0.02)
-        
-        # 遊戲結束後顯示最後畫面
-        self.view.render()
+            # 設定下一次循環
+            self.game_loop_id = self.master.after(int(self.drop_speed), self.game_loop)
+        else:
+            # 遊戲結束時，停止循環並顯示結束畫面
+            self.view.draw(self.model.get_game_state())
 
 
-# --- Main Execution (主程式入口) ---
+# --- 程式主入口 (Main Entry Point) ---
 if __name__ == "__main__":
-    print("正在啟動俄羅斯方塊...")
-    print("請確保您的終端機視窗足夠大以獲得最佳體驗。")
-    time.sleep(2)
-    
-    # 建立 MVC 元件
-    game_model = TetrisModel()
-    game_view = TetrisView(game_model)
-    game_controller = TetrisController(game_model, game_view)
-    
-    # 執行遊戲
-    game_controller.run()
-    
-    print("\n感謝遊玩！")
-    # 移除所有鍵盤掛鉤，以確保程式乾淨退出
-    keyboard.unhook_all()
+    root = tk.Tk()
+    app = TetrisController(root)
+    root.mainloop()
 
