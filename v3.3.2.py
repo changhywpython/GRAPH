@@ -92,7 +92,7 @@ class PlottingApp(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("多功能繪圖工具-V3.4.0") # 版本號更新
+        self.setWindowTitle("多功能繪圖工具-V3.4.1 (含系列選擇)") # 版本號更新
         self.setGeometry(100, 100, 1200, 800)
         
         self.set_matplotlib_font()
@@ -124,7 +124,6 @@ class PlottingApp(QMainWindow):
         
         self.highlighted_widgets = []
 
-        # MODIFIED: 增加點顏色的設定
         self.line_color_hex = "#1f77b4"
         self.point_color_hex = "#ff7f0e"
         self.bg_color_hex = "#ffffff"
@@ -165,7 +164,6 @@ class PlottingApp(QMainWindow):
                 plt.rcParams['font.sans-serif'] = found_font
                 print(f"找到並使用中文字體: {found_font}")
             else:
-                # 備用方案: 搜尋系統字體
                 font_paths = fm.findSystemFonts(fontpaths=None, fontext='ttf')
                 for font_path in font_paths:
                     if any(kw in os.path.basename(font_path).lower() for kw in ['simhei', 'yahei', 'pingfang', 'heiti']):
@@ -187,7 +185,6 @@ class PlottingApp(QMainWindow):
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
 
-        # 左側控制面板
         self.control_tabs = QTabWidget()
         self.control_tabs.setFixedWidth(400)
         
@@ -199,7 +196,6 @@ class PlottingApp(QMainWindow):
 
         main_layout.addWidget(self.control_tabs)
 
-        # 繪圖區域 (右側)
         plot_area_widget = QWidget()
         plot_area_layout = QVBoxLayout(plot_area_widget)
         
@@ -218,7 +214,6 @@ class PlottingApp(QMainWindow):
         
         main_layout.addWidget(plot_area_widget)
 
-        # --- 數據與檔案分頁 ---
         data_settings_layout = QVBoxLayout(self.data_settings_tab)
         data_settings_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
@@ -227,14 +222,12 @@ class PlottingApp(QMainWindow):
         self.load_excel_btn.clicked.connect(self.load_excel_file)
         excel_layout.addWidget(self.load_excel_btn, 0, 0, 1, 2)
         
-        self.x_col_label = QLabel("X 欄位:")
-        excel_layout.addWidget(self.x_col_label, 1, 0)
+        excel_layout.addWidget(QLabel("X 欄位:"), 1, 0)
         self.x_col_combo = QComboBox()
         self.x_col_combo.currentIndexChanged.connect(self.update_data_from_file_input)
         excel_layout.addWidget(self.x_col_combo, 1, 1)
         
-        self.y_col_label = QLabel("Y 欄位 (可多選):")
-        excel_layout.addWidget(self.y_col_label, 2, 0, 1, 2)
+        excel_layout.addWidget(QLabel("Y 欄位 (可多選):"), 2, 0, 1, 2)
         self.y_col_list = QListWidget()
         self.y_col_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.y_col_list.itemSelectionChanged.connect(self.update_data_from_file_input)
@@ -277,14 +270,12 @@ class PlottingApp(QMainWindow):
         data_table_group = self.create_collapsible_container("數據表格", data_table_layout)
         data_settings_layout.addWidget(data_table_group)
 
-        # --- 繪圖設定分頁 ---
         self.plot_settings_scroll_area = QScrollArea()
         self.plot_settings_scroll_area.setWidgetResizable(True)
         plot_settings_content_widget = QWidget()
         plot_settings_layout = QVBoxLayout(plot_settings_content_widget)
         plot_settings_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # 圖表類型
         plot_type_layout = QHBoxLayout()
         self.line_checkbox = QCheckBox("折線圖")
         self.scatter_checkbox = QCheckBox("散佈圖")
@@ -301,7 +292,6 @@ class PlottingApp(QMainWindow):
         plot_type_group = self.create_collapsible_container("圖表類型", plot_type_layout)
         plot_settings_layout.addWidget(plot_type_group)
 
-        # 圖表設定
         self.settings_layout = QVBoxLayout()
         self.settings_layout.addWidget(QLabel("圖表標題:"))
         self.title_input = QLineEdit()
@@ -383,7 +373,6 @@ class PlottingApp(QMainWindow):
         self.settings_group = self.create_collapsible_container("圖表設定", self.settings_layout, "settings_group")
         plot_settings_layout.addWidget(self.settings_group)
         
-        # 繪圖樣式設定
         self.style_layout = QVBoxLayout()
         self.line_width_spinbox = QDoubleSpinBox()
         self.bar_width_spinbox = QDoubleSpinBox()
@@ -394,9 +383,18 @@ class PlottingApp(QMainWindow):
         self.connect_scatter_checkbox.toggled.connect(self.update_plot)
         self.smooth_line_checkbox = QCheckBox("平滑曲線")
         self.smooth_line_checkbox.toggled.connect(self.update_plot)
+        
+        # --- START: 新增數據系列選擇下拉選單 ---
+        series_selection_layout = QHBoxLayout()
+        series_selection_layout.addWidget(QLabel("選擇數據系列:"))
+        self.series_combo = QComboBox()
+        self.series_combo.currentIndexChanged.connect(self.on_series_selected_from_combo)
+        series_selection_layout.addWidget(self.series_combo)
+        self.style_layout.addLayout(series_selection_layout)
+        # --- END: 新增數據系列選擇下拉選單 ---
+
         self.setup_dynamic_widgets()
         
-        # MODIFIED: 顏色按鈕區分線和點
         line_color_layout = QHBoxLayout()
         line_color_layout.addWidget(QLabel("線條顏色:"))
         self.line_color_btn = QPushButton("選擇顏色")
@@ -410,7 +408,6 @@ class PlottingApp(QMainWindow):
         self.point_color_btn.clicked.connect(lambda: self.pick_color("point"))
         point_color_layout.addWidget(self.point_color_btn)
         self.style_layout.addLayout(point_color_layout)
-        # --- END MODIFICATION ---
 
         border_width_layout = QHBoxLayout()
         border_width_layout.addWidget(QLabel("邊框粗度:"))
@@ -432,7 +429,6 @@ class PlottingApp(QMainWindow):
         self.style_group = self.create_collapsible_container("繪圖樣式設定", self.style_layout, "style_group")
         plot_settings_layout.addWidget(self.style_group)
         
-        # 背景與座標軸設定
         axis_style_layout = QVBoxLayout()
         axis_style_layout.addWidget(QLabel("背景顏色:"))
         self.bg_color_btn = QPushButton("選擇顏色")
@@ -495,7 +491,6 @@ class PlottingApp(QMainWindow):
         tick_size_layout_y.addWidget(self.y_tick_label_bold_checkbox)
         axis_style_layout.addLayout(tick_size_layout_y)
 
-        # NEW: X/Y 軸刻度角度調整
         tick_rotation_layout_x = QHBoxLayout()
         tick_rotation_layout_x.addWidget(QLabel("X軸刻度角度:"))
         self.x_tick_rotation_spinbox = QSpinBox()
@@ -513,7 +508,6 @@ class PlottingApp(QMainWindow):
         self.y_tick_rotation_spinbox.valueChanged.connect(self.update_plot)
         tick_rotation_layout_y.addWidget(self.y_tick_rotation_spinbox)
         axis_style_layout.addLayout(tick_rotation_layout_y)
-        # --- END NEW ---
         
         axis_style_layout.addWidget(QLabel("座標軸邊框粗度:"))
         self.axis_border_width_spinbox = QDoubleSpinBox()
@@ -548,7 +542,6 @@ class PlottingApp(QMainWindow):
         self.axis_style_group = self.create_collapsible_container("背景與座標軸設定", axis_style_layout, "axis_style_group")
         plot_settings_layout.addWidget(self.axis_style_group)
         
-        # 網格線設定
         grid_layout = QVBoxLayout()
         self.major_grid_checkbox = QCheckBox("顯示主網格線")
         self.major_grid_checkbox.setChecked(True)
@@ -566,7 +559,6 @@ class PlottingApp(QMainWindow):
         self.grid_group = self.create_collapsible_container("網格線設定", grid_layout, "grid_group")
         plot_settings_layout.addWidget(self.grid_group)
         
-        # 次刻度線設定
         minor_tick_layout = QVBoxLayout()
         minor_tick_layout.addWidget(QLabel("次刻度線 X 軸間隔:"))
         self.minor_x_interval_spinbox = QDoubleSpinBox()
@@ -594,7 +586,6 @@ class PlottingApp(QMainWindow):
         self.minor_tick_group = self.create_collapsible_container("次刻度線設定", minor_tick_layout)
         plot_settings_layout.addWidget(self.minor_tick_group)
 
-        # 範本功能
         template_layout = QHBoxLayout()
         self.save_template_btn = QPushButton("儲存設定為範本")
         self.save_template_btn.clicked.connect(self.save_template)
@@ -615,6 +606,48 @@ class PlottingApp(QMainWindow):
         self.plot_settings_scroll_area.setWidget(plot_settings_content_widget)
         main_plot_settings_layout = QVBoxLayout(self.plot_settings_tab)
         main_plot_settings_layout.addWidget(self.plot_settings_scroll_area)
+
+    def update_series_combo(self):
+        """ 更新數據系列選擇下拉選單的內容 """
+        self.series_combo.blockSignals(True)
+        self.series_combo.clear()
+        self.series_combo.addItems([ds['name'] for ds in self.datasets])
+        
+        if self.selected_artist_info:
+            ds_index = self.selected_artist_info.get('dataset_index')
+            if ds_index is not None and 0 <= ds_index < self.series_combo.count():
+                self.series_combo.setCurrentIndex(ds_index)
+        
+        self.series_combo.blockSignals(False)
+
+    def on_series_selected_from_combo(self, index):
+        """ 當使用者從下拉選單選擇一個數據系列時觸發 """
+        if index != -1 and not self.is_updating_ui:
+            self.select_dataset(index)
+
+    def select_dataset(self, ds_idx):
+        """ 根據索引值，以程式化方式選取一個數據系列並更新UI """
+        if 0 <= ds_idx < len(self.datasets):
+            try:
+                self.is_updating_ui = True
+                self.selected_artist_info = {'dataset_index': ds_idx, 'point_index': 0}
+                current_ds = self.datasets[ds_idx]
+                
+                if (idx := self.marker_combo.findText(current_ds.get('marker', '無'))) != -1: self.marker_combo.setCurrentIndex(idx)
+                if (idx := self.linestyle_combo.findText(current_ds.get('linestyle', '實線'))) != -1: self.linestyle_combo.setCurrentIndex(idx)
+                self.line_width_spinbox.setValue(current_ds.get('linewidth', 2.0))
+                self.line_color_hex = current_ds.get('primary_color', '#1f77b4')
+                self.point_color_hex = current_ds.get('colors', [self.point_color_hex])[0]
+                self.border_color_hex = current_ds.get('border_color', '#000000')
+                
+                self.update_button_color()
+                
+                self.control_tabs.setCurrentWidget(self.plot_settings_tab)
+                self.highlight_widget(self.style_group)
+                self.plot_settings_scroll_area.ensureWidgetVisible(self.style_group)
+                
+            finally:
+                self.is_updating_ui = False
         
     def setup_dynamic_widgets(self):
         """ 為動態顯示的組件建立並添加布局。 """
@@ -709,7 +742,6 @@ class PlottingApp(QMainWindow):
         for dataset_index, dataset in enumerate(self.datasets):
             x_data, y_data, colors, name = dataset['x'], dataset['y'], dataset['colors'], dataset['name']
             
-            # MODIFIED: 使用 line_color_hex 作為預設線顏色
             primary_color = dataset.get('primary_color', self.line_color_hex)
             line_segment_colors = dataset.get('line_segment_colors', [primary_color] * (len(x_data) - 1))
             border_color = dataset.get('border_color', self.border_color_hex)
@@ -862,7 +894,6 @@ class PlottingApp(QMainWindow):
         self.ax.tick_params(axis='x', labelsize=self.x_tick_label_size_spinbox.value())
         self.ax.tick_params(axis='y', labelsize=self.y_tick_label_size_spinbox.value())
 
-        # MODIFIED: 加入角度調整
         plt.setp(self.ax.get_xticklabels(), 
                  fontweight='bold' if self.x_tick_label_bold_checkbox.isChecked() else 'normal',
                  rotation=self.x_tick_rotation_spinbox.value())
@@ -875,7 +906,6 @@ class PlottingApp(QMainWindow):
         if all_x_numeric:
             if self.x_interval_spinbox.value() > 0 and not self.box_checkbox.isChecked(): self.ax.xaxis.set_major_locator(ticker.MultipleLocator(self.x_interval_spinbox.value()))
             if self.minor_x_interval_spinbox.value() > 0 and not self.box_checkbox.isChecked(): self.ax.xaxis.set_minor_locator(ticker.MultipleLocator(self.minor_x_interval_spinbox.value()))
-        # --- FIX START: 當X軸為文字時，根據間隔設定刻度 ---
         elif self.datasets and not self.box_checkbox.isChecked():
             interval = max(1, int(self.x_interval_spinbox.value()))
             x_labels = self.datasets[0]['x']
@@ -884,7 +914,6 @@ class PlottingApp(QMainWindow):
             tick_labels = [x_labels[i] for i in tick_positions]
             
             self.ax.set_xticks(tick_positions, tick_labels)
-        # --- FIX END ---
 
         if all_y_numeric:
             if self.y_interval_spinbox.value() > 0: self.ax.yaxis.set_major_locator(ticker.MultipleLocator(self.y_interval_spinbox.value()))
@@ -1032,6 +1061,7 @@ class PlottingApp(QMainWindow):
                         self.point_color_hex = current_ds.get('colors', [self.point_color_hex])[0]
                         self.border_color_hex = current_ds.get('border_color', '#000000')
                         self.update_button_color()
+                        self.update_series_combo() 
                 finally:
                     self.is_updating_ui = False
                 return
@@ -1049,7 +1079,6 @@ class PlottingApp(QMainWindow):
                     
                     if annot.get_anncoords() == 'offset points':
                         xy_pixels = self.ax.transData.transform(annot.xy)
-                        # Ensure annot.xytext is a numpy array for vector addition
                         text_pos_pixels = xy_pixels + np.array(annot.xytext)
                         annot.set_position(self.ax.transData.inverted().transform(text_pos_pixels))
                         annot.set_anncoords('data')
@@ -1069,12 +1098,10 @@ class PlottingApp(QMainWindow):
 
     def on_release_annotate(self, event):
         if self.dragged_annotation and hasattr(self.dragged_annotation, 'my_id'):
-            # The position is already in data coordinates, so just save it
             self.annotation_positions[self.dragged_annotation.my_id] = self.dragged_annotation.get_position()
         self.dragged_annotation = None
 
     def update_button_color(self):
-        # MODIFIED: 更新新的顏色按鈕
         self.line_color_btn.setStyleSheet(f"background-color: {self.line_color_hex};")
         self.point_color_btn.setStyleSheet(f"background-color: {self.point_color_hex};")
         self.bg_color_btn.setStyleSheet(f"background-color: {self.bg_color_hex};")
@@ -1085,7 +1112,6 @@ class PlottingApp(QMainWindow):
         self.y_label_color_btn.setStyleSheet(f"background-color: {self.y_label_color_hex};")
         
     def pick_color(self, target):
-        # MODIFIED: 處理線和點的顏色選擇
         initial_color_attr = f"{target}_color_hex"
         initial_color = getattr(self, initial_color_attr, self.line_color_hex)
         color = QColorDialog.getColor(initial=QColor(initial_color))
@@ -1175,6 +1201,7 @@ class PlottingApp(QMainWindow):
         self.datasets = new_datasets
         self.original_datasets = [ds.copy() for ds in self.datasets]
         self.update_plot()
+        self.update_series_combo() 
 
     def on_table_sort(self, column, order):
         if self.last_sort_info['col'] == column: self.last_sort_info['count'] += 1
@@ -1210,6 +1237,7 @@ class PlottingApp(QMainWindow):
             self.original_datasets = [ds.copy() for ds in self.datasets]
             self.y_label_input.setText(y_cols[0] if len(y_cols) == 1 else "數據值")
             self.update_plot(); self.update_table()
+            self.update_series_combo()
         except Exception as e:
             QMessageBox.critical(self, "數據讀取錯誤", f"選擇的欄位有問題。\n{e}")
 
@@ -1239,6 +1267,7 @@ class PlottingApp(QMainWindow):
                 ds['x'].append(last_x + 1); ds['y'].append(0); ds['colors'].append(self.point_color_hex)
         self.original_datasets = [ds.copy() for ds in self.datasets]
         self.update_table(); self.update_plot()
+        self.update_series_combo()
 
     def remove_row(self):
         rows = sorted(list(set(index.row() for index in self.data_table.selectedIndexes())), reverse=True)
@@ -1251,6 +1280,7 @@ class PlottingApp(QMainWindow):
                             del ds[key][row]
         self.original_datasets = [ds.copy() for ds in self.datasets]
         self.update_table(); self.update_plot()
+        self.update_series_combo()
 
     def move_row(self, direction):
         if not (sel := self.data_table.selectedIndexes()): return
@@ -1277,13 +1307,12 @@ class PlottingApp(QMainWindow):
         self.data_source, self.annotation_positions = 'manual', {}
         for w in [self.title_input, self.x_label_input, self.y_label_input, self.x_col_combo, self.y_col_list]: w.clear()
         self.update_table(); self.update_plot()
+        self.update_series_combo()
 
     def get_settings(self):
-        # MODIFIED: 增加新 UI 元件到範本
         settings = {w.objectName(): w.text() if isinstance(w, QLineEdit) else w.value() if isinstance(w, (QSpinBox, QDoubleSpinBox)) else w.isChecked() if isinstance(w, QCheckBox) else w.currentText() if isinstance(w, QComboBox) else None for w in self.findChildren((QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox)) if w.objectName()}
         settings.update({k: getattr(self, k) for k in dir(self) if k.endswith("_hex")})
         settings["datasets_styles"] = [{"marker": d.get('marker'), "linewidth": d.get('linewidth'), "linestyle": d.get('linestyle')} for d in self.datasets]
-        # 手動添加我們新增的 spinbox (如果它們沒有 objectName)
         settings["x_tick_rotation"] = self.x_tick_rotation_spinbox.value()
         settings["y_tick_rotation"] = self.y_tick_rotation_spinbox.value()
         return settings
@@ -1298,7 +1327,6 @@ class PlottingApp(QMainWindow):
                     elif isinstance(widget, QCheckBox): widget.setChecked(v)
                     elif isinstance(widget, QComboBox) and (idx := widget.findText(v)) != -1: widget.setCurrentIndex(idx)
                 elif k.endswith("_hex"): setattr(self, k, v)
-            # 手動設定我們新增的 spinbox
             if "x_tick_rotation" in s: self.x_tick_rotation_spinbox.setValue(s["x_tick_rotation"])
             if "y_tick_rotation" in s: self.y_tick_rotation_spinbox.setValue(s["y_tick_rotation"])
             if "datasets_styles" in s:
@@ -1331,7 +1359,7 @@ class PlottingApp(QMainWindow):
         for widget, original_style in list(self.highlighted_widgets):
             try:
                 widget.setStyleSheet(original_style)
-            except RuntimeError: # Widget might have been deleted
+            except RuntimeError:
                 pass
         self.highlighted_widgets.clear()
 
