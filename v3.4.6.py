@@ -133,7 +133,7 @@ class PlottingApp(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("多功能繪圖工具-V3.4.6 (功能修正版)") # <--- 修正: 版本號更新
+        self.setWindowTitle("多功能繪圖工具-V3.4.5 (範本儲存修正)") # <--- 修正: 版本號更新
         self.setGeometry(100, 100, 1200, 800)
         
         self.set_matplotlib_font()
@@ -336,22 +336,18 @@ class PlottingApp(QMainWindow):
         self.settings_layout = QVBoxLayout()
         self.settings_layout.addWidget(QLabel("圖表標題:"))
         self.title_input = QLineEdit()
-        self.title_input.setObjectName("title_input")
         self.title_input.textChanged.connect(self.update_plot)
         self.settings_layout.addWidget(self.title_input)
         self.settings_layout.addWidget(QLabel("X 軸標籤:"))
         self.x_label_input = QLineEdit()
-        self.x_label_input.setObjectName("x_label_input")
         self.x_label_input.textChanged.connect(self.update_plot)
         self.settings_layout.addWidget(self.x_label_input)
         self.settings_layout.addWidget(QLabel("Y 軸標籤:"))
         self.y_label_input = QLineEdit()
-        self.y_label_input.setObjectName("y_label_input")
         self.y_label_input.textChanged.connect(self.update_plot)
         self.settings_layout.addWidget(self.y_label_input)
         self.settings_layout.addWidget(QLabel("圖例文字大小:"))
         self.legend_size_spinbox = QSpinBox()
-        self.legend_size_spinbox.setObjectName("legend_size_spinbox")
         self.legend_size_spinbox.setMinimum(1)
         self.legend_size_spinbox.setValue(10)
         self.legend_size_spinbox.valueChanged.connect(self.update_plot)
@@ -360,16 +356,13 @@ class PlottingApp(QMainWindow):
         self.settings_layout.addWidget(QLabel("顯示數據值:"))
         data_label_layout = QHBoxLayout()
         self.show_data_labels_checkbox = QCheckBox("顯示數據值")
-        self.show_data_labels_checkbox.setObjectName("show_data_labels_checkbox")
         self.show_data_labels_checkbox.toggled.connect(self.update_plot)
         data_label_layout.addWidget(self.show_data_labels_checkbox)
         self.show_x_labels_checkbox = QCheckBox("X")
-        self.show_x_labels_checkbox.setObjectName("show_x_labels_checkbox")
         self.show_x_labels_checkbox.setChecked(True)
         self.show_x_labels_checkbox.toggled.connect(self.update_plot)
         data_label_layout.addWidget(self.show_x_labels_checkbox)
         self.show_y_labels_checkbox = QCheckBox("Y")
-        self.show_y_labels_checkbox.setObjectName("show_y_labels_checkbox")
         self.show_y_labels_checkbox.setChecked(True)
         self.show_y_labels_checkbox.toggled.connect(self.update_plot)
         data_label_layout.addWidget(self.show_y_labels_checkbox)
@@ -377,7 +370,6 @@ class PlottingApp(QMainWindow):
         
         self.settings_layout.addWidget(QLabel("數據標籤大小:"))
         self.data_label_size_spinbox = QSpinBox()
-        self.data_label_size_spinbox.setObjectName("data_label_size_spinbox")
         self.data_label_size_spinbox.setMinimum(1)
         self.data_label_size_spinbox.setValue(10)
         self.data_label_size_spinbox.valueChanged.connect(self.update_plot)
@@ -386,7 +378,6 @@ class PlottingApp(QMainWindow):
         interval_layout = QHBoxLayout()
         interval_layout.addWidget(QLabel("X軸間隔:"))
         self.x_interval_spinbox = QDoubleSpinBox()
-        self.x_interval_spinbox.setObjectName("x_interval_spinbox")
         self.x_interval_spinbox.setMinimum(0.0)
         self.x_interval_spinbox.setMaximum(float('inf'))
         self.x_interval_spinbox.setValue(1.0)
@@ -397,7 +388,6 @@ class PlottingApp(QMainWindow):
         interval_layout_y = QHBoxLayout()
         interval_layout_y.addWidget(QLabel("Y軸間隔:"))
         self.y_interval_spinbox = QDoubleSpinBox()
-        self.y_interval_spinbox.setObjectName("y_interval_spinbox")
         self.y_interval_spinbox.setMinimum(0.0)
         self.y_interval_spinbox.setMaximum(float('inf'))
         self.y_interval_spinbox.setValue(1.0)
@@ -408,7 +398,6 @@ class PlottingApp(QMainWindow):
         decimal_layout = QHBoxLayout()
         decimal_layout.addWidget(QLabel("X軸小數點:"))
         self.x_decimal_spinbox = QSpinBox()
-        self.x_decimal_spinbox.setObjectName("x_decimal_spinbox")
         self.x_decimal_spinbox.setValue(2)
         self.x_decimal_spinbox.valueChanged.connect(self.update_plot)
         decimal_layout.addWidget(self.x_decimal_spinbox)
@@ -417,7 +406,6 @@ class PlottingApp(QMainWindow):
         decimal_layout_y = QHBoxLayout()
         decimal_layout_y.addWidget(QLabel("Y軸小數點:"))
         self.y_decimal_spinbox = QSpinBox()
-        self.y_decimal_spinbox.setObjectName("y_decimal_spinbox")
         self.y_decimal_spinbox.setValue(2)
         self.y_decimal_spinbox.valueChanged.connect(self.update_plot)
         decimal_layout_y.addWidget(self.y_decimal_spinbox)
@@ -427,11 +415,19 @@ class PlottingApp(QMainWindow):
         plot_settings_layout.addWidget(self.settings_group)
         
         self.style_layout = QVBoxLayout()
+        self.line_width_spinbox = QDoubleSpinBox()
+        self.bar_width_spinbox = QDoubleSpinBox()
+        self.point_size_spinbox = QDoubleSpinBox()
+        self.linestyle_combo = QComboBox()
+        self.marker_combo = QComboBox()
+        self.connect_scatter_checkbox = QCheckBox("連接散佈點")
+        self.connect_scatter_checkbox.toggled.connect(self.update_plot)
+        self.smooth_line_checkbox = QCheckBox("平滑曲線")
+        self.smooth_line_checkbox.toggled.connect(self.update_plot)
         
         series_selection_layout = QHBoxLayout()
         series_selection_layout.addWidget(QLabel("選擇數據系列:"))
         self.series_combo = QComboBox()
-        self.series_combo.setObjectName("series_combo")
         self.series_combo.currentIndexChanged.connect(self.on_series_selected_from_combo)
         series_selection_layout.addWidget(self.series_combo)
         self.style_layout.addLayout(series_selection_layout)
@@ -441,19 +437,20 @@ class PlottingApp(QMainWindow):
         line_color_layout = QHBoxLayout()
         line_color_layout.addWidget(QLabel("線條顏色:"))
         self.line_color_btn = QPushButton("選擇顏色")
+        self.line_color_btn.clicked.connect(lambda: self.pick_color("line"))
         line_color_layout.addWidget(self.line_color_btn)
         self.style_layout.addLayout(line_color_layout)
 
         point_color_layout = QHBoxLayout()
         point_color_layout.addWidget(QLabel("數據點顏色:"))
         self.point_color_btn = QPushButton("選擇顏色")
+        self.point_color_btn.clicked.connect(lambda: self.pick_color("point"))
         point_color_layout.addWidget(self.point_color_btn)
         self.style_layout.addLayout(point_color_layout)
 
         border_width_layout = QHBoxLayout()
         border_width_layout.addWidget(QLabel("邊框粗度:"))
         self.border_width_spinbox = QDoubleSpinBox()
-        self.border_width_spinbox.setObjectName("border_width_spinbox")
         self.border_width_spinbox.setMinimum(0.0)
         self.border_width_spinbox.setValue(1.0)
         self.border_width_spinbox.setSingleStep(0.5)
@@ -464,6 +461,7 @@ class PlottingApp(QMainWindow):
         border_color_layout = QHBoxLayout()
         border_color_layout.addWidget(QLabel("邊框顏色:"))
         self.border_color_btn = QPushButton("選擇顏色")
+        self.border_color_btn.clicked.connect(lambda: self.pick_color("border"))
         border_color_layout.addWidget(self.border_color_btn)
         self.style_layout.addLayout(border_color_layout)
 
@@ -480,13 +478,11 @@ class PlottingApp(QMainWindow):
         x_label_props_layout = QHBoxLayout()
         x_label_props_layout.addWidget(QLabel("大小:"))
         self.x_label_size_spinbox = QSpinBox()
-        self.x_label_size_spinbox.setObjectName("x_label_size_spinbox")
         self.x_label_size_spinbox.setMinimum(1)
         self.x_label_size_spinbox.setValue(12)
         self.x_label_size_spinbox.valueChanged.connect(self.update_plot)
         x_label_props_layout.addWidget(self.x_label_size_spinbox)
         self.x_label_bold_checkbox = QCheckBox("粗體")
-        self.x_label_bold_checkbox.setObjectName("x_label_bold_checkbox")
         self.x_label_bold_checkbox.toggled.connect(self.update_plot)
         x_label_props_layout.addWidget(self.x_label_bold_checkbox)
         self.x_label_color_btn = QPushButton("顏色")
@@ -498,13 +494,11 @@ class PlottingApp(QMainWindow):
         y_label_props_layout = QHBoxLayout()
         y_label_props_layout.addWidget(QLabel("大小:"))
         self.y_label_size_spinbox = QSpinBox()
-        self.y_label_size_spinbox.setObjectName("y_label_size_spinbox")
         self.y_label_size_spinbox.setMinimum(1)
         self.y_label_size_spinbox.setValue(12)
         self.y_label_size_spinbox.valueChanged.connect(self.update_plot)
         y_label_props_layout.addWidget(self.y_label_size_spinbox)
         self.y_label_bold_checkbox = QCheckBox("粗體")
-        self.y_label_bold_checkbox.setObjectName("y_label_bold_checkbox")
         self.y_label_bold_checkbox.toggled.connect(self.update_plot)
         y_label_props_layout.addWidget(self.y_label_bold_checkbox)
         self.y_label_color_btn = QPushButton("顏色")
@@ -515,13 +509,11 @@ class PlottingApp(QMainWindow):
         tick_size_layout = QHBoxLayout()
         tick_size_layout.addWidget(QLabel("X軸刻度大小:"))
         self.x_tick_label_size_spinbox = QSpinBox()
-        self.x_tick_label_size_spinbox.setObjectName("x_tick_label_size_spinbox")
         self.x_tick_label_size_spinbox.setMinimum(1)
         self.x_tick_label_size_spinbox.setValue(10)
         self.x_tick_label_size_spinbox.valueChanged.connect(self.update_plot)
         tick_size_layout.addWidget(self.x_tick_label_size_spinbox)
         self.x_tick_label_bold_checkbox = QCheckBox("粗體")
-        self.x_tick_label_bold_checkbox.setObjectName("x_tick_label_bold_checkbox")
         self.x_tick_label_bold_checkbox.toggled.connect(self.update_plot)
         tick_size_layout.addWidget(self.x_tick_label_bold_checkbox)
         axis_style_layout.addLayout(tick_size_layout)
@@ -529,13 +521,11 @@ class PlottingApp(QMainWindow):
         tick_size_layout_y = QHBoxLayout()
         tick_size_layout_y.addWidget(QLabel("Y軸刻度大小:"))
         self.y_tick_label_size_spinbox = QSpinBox()
-        self.y_tick_label_size_spinbox.setObjectName("y_tick_label_size_spinbox")
         self.y_tick_label_size_spinbox.setMinimum(1)
         self.y_tick_label_size_spinbox.setValue(10)
         self.y_tick_label_size_spinbox.valueChanged.connect(self.update_plot)
         tick_size_layout_y.addWidget(self.y_tick_label_size_spinbox)
         self.y_tick_label_bold_checkbox = QCheckBox("粗體")
-        self.y_tick_label_bold_checkbox.setObjectName("y_tick_label_bold_checkbox")
         self.y_tick_label_bold_checkbox.toggled.connect(self.update_plot)
         tick_size_layout_y.addWidget(self.y_tick_label_bold_checkbox)
         axis_style_layout.addLayout(tick_size_layout_y)
@@ -560,7 +550,6 @@ class PlottingApp(QMainWindow):
         
         axis_style_layout.addWidget(QLabel("座標軸邊框粗度:"))
         self.axis_border_width_spinbox = QDoubleSpinBox()
-        self.axis_border_width_spinbox.setObjectName("axis_border_width_spinbox")
         self.axis_border_width_spinbox.setMinimum(0.0)
         self.axis_border_width_spinbox.setValue(1.0)
         self.axis_border_width_spinbox.setSingleStep(0.5)
@@ -570,7 +559,6 @@ class PlottingApp(QMainWindow):
         self.tick_direction_layout = QHBoxLayout()
         self.tick_direction_layout.addWidget(QLabel("刻度線朝向:"))
         self.tick_direction_combo = QComboBox()
-        self.tick_direction_combo.setObjectName("tick_direction_combo")
         self.tick_direction_combo.addItems(["朝外", "朝內", "朝內外"])
         self.tick_direction_combo.currentIndexChanged.connect(self.update_plot)
         self.tick_direction_layout.addWidget(self.tick_direction_combo)
@@ -579,14 +567,12 @@ class PlottingApp(QMainWindow):
         major_tick_size_layout = QGridLayout()
         major_tick_size_layout.addWidget(QLabel("主刻度線 長度:"), 0, 0)
         self.major_tick_length_spinbox = QDoubleSpinBox()
-        self.major_tick_length_spinbox.setObjectName("major_tick_length_spinbox")
         self.major_tick_length_spinbox.setValue(3.5)
         self.major_tick_length_spinbox.valueChanged.connect(self.update_plot)
         major_tick_size_layout.addWidget(self.major_tick_length_spinbox, 0, 1)
 
         major_tick_size_layout.addWidget(QLabel("寬度:"), 0, 2)
         self.major_tick_width_spinbox = QDoubleSpinBox()
-        self.major_tick_width_spinbox.setObjectName("major_tick_width_spinbox")
         self.major_tick_width_spinbox.setValue(0.8)
         self.major_tick_width_spinbox.valueChanged.connect(self.update_plot)
         major_tick_size_layout.addWidget(self.major_tick_width_spinbox, 0, 3)
@@ -597,7 +583,6 @@ class PlottingApp(QMainWindow):
         
         grid_layout = QVBoxLayout()
         self.major_grid_checkbox = QCheckBox("顯示主網格線")
-        self.major_grid_checkbox.setObjectName("major_grid_checkbox")
         self.major_grid_checkbox.setChecked(True)
         self.major_grid_checkbox.toggled.connect(self.update_plot)
         grid_layout.addWidget(self.major_grid_checkbox)
@@ -605,7 +590,6 @@ class PlottingApp(QMainWindow):
         self.major_grid_color_btn.clicked.connect(lambda: self.pick_color("major_grid"))
         grid_layout.addWidget(self.major_grid_color_btn)
         self.minor_grid_checkbox = QCheckBox("顯示次網格線")
-        self.minor_grid_checkbox.setObjectName("minor_grid_checkbox")
         self.minor_grid_checkbox.toggled.connect(self.update_plot)
         grid_layout.addWidget(self.minor_grid_checkbox)
         self.minor_grid_color_btn = QPushButton("次網格顏色")
@@ -617,13 +601,11 @@ class PlottingApp(QMainWindow):
         minor_tick_layout = QVBoxLayout()
         minor_tick_layout.addWidget(QLabel("次刻度線 X 軸間隔:"))
         self.minor_x_interval_spinbox = QDoubleSpinBox()
-        self.minor_x_interval_spinbox.setObjectName("minor_x_interval_spinbox")
         self.minor_x_interval_spinbox.setValue(0.5)
         self.minor_x_interval_spinbox.valueChanged.connect(self.update_plot)
         minor_tick_layout.addWidget(self.minor_x_interval_spinbox)
         minor_tick_layout.addWidget(QLabel("次刻度線 Y 軸間隔:"))
         self.minor_y_interval_spinbox = QDoubleSpinBox()
-        self.minor_y_interval_spinbox.setObjectName("minor_y_interval_spinbox")
         self.minor_y_interval_spinbox.setValue(0.5)
         self.minor_y_interval_spinbox.valueChanged.connect(self.update_plot)
         minor_tick_layout.addWidget(self.minor_y_interval_spinbox)
@@ -631,13 +613,11 @@ class PlottingApp(QMainWindow):
         minor_tick_size_layout = QGridLayout()
         minor_tick_size_layout.addWidget(QLabel("次刻度線 長度:"), 0, 0)
         self.minor_tick_length_spinbox = QDoubleSpinBox()
-        self.minor_tick_length_spinbox.setObjectName("minor_tick_length_spinbox")
         self.minor_tick_length_spinbox.setValue(2.0)
         self.minor_tick_length_spinbox.valueChanged.connect(self.update_plot)
         minor_tick_size_layout.addWidget(self.minor_tick_length_spinbox, 0, 1)
         minor_tick_size_layout.addWidget(QLabel("寬度:"), 0, 2)
         self.minor_tick_width_spinbox = QDoubleSpinBox()
-        self.minor_tick_width_spinbox.setObjectName("minor_tick_width_spinbox")
         self.minor_tick_width_spinbox.setValue(0.6)
         self.minor_tick_width_spinbox.valueChanged.connect(self.update_plot)
         minor_tick_size_layout.addWidget(self.minor_tick_width_spinbox, 0, 3)
@@ -666,68 +646,6 @@ class PlottingApp(QMainWindow):
         main_plot_settings_layout = QVBoxLayout(self.plot_settings_tab)
         main_plot_settings_layout.addWidget(self.plot_settings_scroll_area)
         
-    def setup_dynamic_widgets(self):
-        """ 為動態顯示的組件建立並添加布局。 """
-        self.line_width_spinbox = QDoubleSpinBox()
-        self.line_width_spinbox.setObjectName("line_width_spinbox")
-        self.bar_width_spinbox = QDoubleSpinBox()
-        self.bar_width_spinbox.setObjectName("bar_width_spinbox")
-        self.point_size_spinbox = QDoubleSpinBox()
-        self.point_size_spinbox.setObjectName("point_size_spinbox")
-        self.linestyle_combo = QComboBox()
-        self.linestyle_combo.setObjectName("linestyle_combo")
-        self.marker_combo = QComboBox()
-        self.marker_combo.setObjectName("marker_combo")
-        self.connect_scatter_checkbox = QCheckBox("連接散佈點")
-        self.connect_scatter_checkbox.setObjectName("connect_scatter_checkbox")
-        self.smooth_line_checkbox = QCheckBox("平滑曲線")
-        self.smooth_line_checkbox.setObjectName("smooth_line_checkbox")
-        
-        self.line_color_btn.clicked.connect(lambda: self.pick_color("line"))
-        self.point_color_btn.clicked.connect(lambda: self.pick_color("point"))
-        self.border_color_btn.clicked.connect(lambda: self.pick_color("border"))
-        
-        self.style_layout.addWidget(self.connect_scatter_checkbox)
-        self.connect_scatter_checkbox.toggled.connect(self.update_plot)
-        
-        self.line_width_label = QLabel("線條寬度:")
-        self.style_layout.addWidget(self.line_width_label)
-        self.line_width_spinbox.setMinimum(0.5)
-        self.line_width_spinbox.setValue(2.0)
-        self.line_width_spinbox.valueChanged.connect(self.update_artist_style)
-        self.style_layout.addWidget(self.line_width_spinbox)
-
-        self.bar_width_label = QLabel("長條圖寬度:")
-        self.style_layout.addWidget(self.bar_width_label)
-        self.bar_width_spinbox.setMinimum(0.01)
-        self.bar_width_spinbox.setValue(0.8)
-        self.bar_width_spinbox.setSingleStep(0.05)
-        self.bar_width_spinbox.valueChanged.connect(self.update_plot)
-        self.style_layout.addWidget(self.bar_width_spinbox)
-
-        self.point_size_label = QLabel("點的大小:")
-        self.style_layout.addWidget(self.point_size_label)
-        self.point_size_spinbox.setMinimum(1.0)
-        self.point_size_spinbox.setValue(10.0)
-        self.point_size_spinbox.valueChanged.connect(self.update_plot)
-        self.style_layout.addWidget(self.point_size_spinbox)
-        
-        self.linestyle_label = QLabel("線條樣式:")
-        self.style_layout.addWidget(self.linestyle_label)
-        self.linestyle_combo.addItems(["實線", "虛線", "點虛線", "點"])
-        self.linestyle_combo.currentIndexChanged.connect(self.update_artist_style)
-        self.style_layout.addWidget(self.linestyle_combo)
-        
-        self.marker_label = QLabel("標記樣式:")
-        self.style_layout.addWidget(self.marker_label)
-        self.marker_combo.addItems(["圓形", "方形", "三角形", "星形", "無"])
-        self.marker_combo.currentIndexChanged.connect(self.update_artist_style)
-        self.style_layout.addWidget(self.marker_combo)
-        
-        if SCIPY_AVAILABLE:
-            self.style_layout.addWidget(self.smooth_line_checkbox)
-            self.smooth_line_checkbox.toggled.connect(self.update_plot)
-            
     def update_series_combo(self):
         """ 更新數據系列選擇下拉選單的內容 """
         self.series_combo.blockSignals(True)
@@ -770,6 +688,47 @@ class PlottingApp(QMainWindow):
             finally:
                 self.is_updating_ui = False
         
+    def setup_dynamic_widgets(self):
+        """ 為動態顯示的組件建立並添加布局。 """
+        self.style_layout.addWidget(self.connect_scatter_checkbox)
+        
+        self.line_width_label = QLabel("線條寬度:")
+        self.style_layout.addWidget(self.line_width_label)
+        self.line_width_spinbox.setMinimum(0.5)
+        self.line_width_spinbox.setValue(2.0)
+        self.line_width_spinbox.valueChanged.connect(self.update_artist_style)
+        self.style_layout.addWidget(self.line_width_spinbox)
+
+        self.bar_width_label = QLabel("長條圖寬度:")
+        self.style_layout.addWidget(self.bar_width_label)
+        self.bar_width_spinbox.setMinimum(0.01)
+        self.bar_width_spinbox.setValue(0.8)
+        self.bar_width_spinbox.setSingleStep(0.05)
+        self.bar_width_spinbox.valueChanged.connect(self.update_plot)
+        self.style_layout.addWidget(self.bar_width_spinbox)
+
+        self.point_size_label = QLabel("點的大小:")
+        self.style_layout.addWidget(self.point_size_label)
+        self.point_size_spinbox.setMinimum(1.0)
+        self.point_size_spinbox.setValue(10.0)
+        self.point_size_spinbox.valueChanged.connect(self.update_plot)
+        self.style_layout.addWidget(self.point_size_spinbox)
+        
+        self.linestyle_label = QLabel("線條樣式:")
+        self.style_layout.addWidget(self.linestyle_label)
+        self.linestyle_combo.addItems(["實線", "虛線", "點虛線", "點"])
+        self.linestyle_combo.currentIndexChanged.connect(self.update_artist_style)
+        self.style_layout.addWidget(self.linestyle_combo)
+        
+        self.marker_label = QLabel("標記樣式:")
+        self.style_layout.addWidget(self.marker_label)
+        self.marker_combo.addItems(["圓形", "方形", "三角形", "星形", "無"])
+        self.marker_combo.currentIndexChanged.connect(self.update_artist_style)
+        self.style_layout.addWidget(self.marker_combo)
+        
+        if SCIPY_AVAILABLE:
+            self.style_layout.addWidget(self.smooth_line_checkbox)
+    
     def update_artist_style(self):
         """更新選定 artist 的樣式，或在未選定时更新所有 artist 的樣式。"""
         if self.is_updating_ui:
@@ -841,39 +800,22 @@ class PlottingApp(QMainWindow):
             if self.line_checkbox.isChecked() or (self.scatter_checkbox.isChecked() and self.connect_scatter_checkbox.isChecked()):
                 if x_is_numeric and y_is_numeric and SCIPY_AVAILABLE and self.smooth_line_checkbox.isChecked():
                     try:
-                        # <--- 修正 2: 修復平滑曲線功能 (START) --->
-                        # 將數據轉換為 numpy 陣列並過濾掉 NaN 值
-                        x_data_np = np.array(x_data, dtype=float)
-                        y_data_np = np.array(y_data, dtype=float)
-                        valid_mask = ~np.isnan(x_data_np) & ~np.isnan(y_data_np)
+                        sorted_indices = np.argsort(x_data)
+                        sorted_x = np.array(x_data)[sorted_indices]
+                        sorted_y = np.array(y_data)[sorted_indices]
                         
-                        x_clean = x_data_np[valid_mask]
-                        y_clean = y_data_np[valid_mask]
+                        unique_x, _, _ = np.unique(sorted_x, return_index=True, return_counts=True)
+                        if len(unique_x) < 2: raise ValueError("需要至少兩個不同的數據點來生成平滑曲線。")
 
-                        if len(x_clean) < 2:
-                            raise ValueError("需要至少兩個有效的數據點來生成平滑曲線。")
-
-                        # 數據必須根據 x 值排序才能進行插值
-                        sorted_indices = np.argsort(x_clean)
-                        sorted_x = x_clean[sorted_indices]
-                        sorted_y = y_clean[sorted_indices]
-                        
-                        # PchipInterpolator 需要唯一的 x 值，對任何重複的 x 值取 y 的平均值
-                        unique_x = np.unique(sorted_x)
-                        if len(unique_x) < 2:
-                            raise ValueError("處理重複值後，唯一數據點少於2個。")
-                        
                         if len(unique_x) < len(sorted_x):
-                            final_y = np.array([np.mean(sorted_y[sorted_x == x_val]) for x_val in unique_x])
-                            final_x = unique_x
+                            final_y = [np.mean(sorted_y[sorted_x == x_val]) for x_val in unique_x]
+                            final_x, final_y = unique_x, np.array(final_y)
                         else:
-                            final_x = sorted_x
-                            final_y = sorted_y
+                            final_x, final_y = sorted_x, sorted_y
 
                         interpolator = PchipInterpolator(final_x, final_y)
                         x_smooth = np.linspace(min(final_x), max(final_x), 300)
                         y_smooth = interpolator(x_smooth)
-                        # <--- 修正 2: (END) --->
                         
                         line_artist, = self.ax.plot(x_smooth, y_smooth, linestyle='-', color=primary_color,
                                     linewidth=linewidth, zorder=1, label=f"{name} (平滑曲線)")
@@ -881,14 +823,12 @@ class PlottingApp(QMainWindow):
                         legend_handles.append(line_artist)
                         legend_labels.append(name)
                     except Exception as e:
-                        print(f"無法為 '{name}' 生成平滑曲線: {e}")
-                        # 如果平滑失敗，退回繪製常規線條
-                        if y_is_numeric:
-                            line_artist, = self.ax.plot(x_plot_data, y_data, color=primary_color, linewidth=linewidth,
-                                            linestyle=ls, zorder=1, label=name)
-                            self.artists_map[line_artist] = {'dataset_index': dataset_index, 'type': 'line'}
-                            legend_handles.append(line_artist)
-                            legend_labels.append(name)
+                        print(f"無法生成平滑曲線: {e}")
+                        line_artist, = self.ax.plot(x_plot_data, y_data, color=primary_color, linewidth=linewidth,
+                                        linestyle=ls, zorder=1, label=name)
+                        self.artists_map[line_artist] = {'dataset_index': dataset_index, 'type': 'line'}
+                        legend_handles.append(line_artist)
+                        legend_labels.append(name)
                 elif y_is_numeric:
                     points = np.array([x_plot_data, y_data]).T.reshape(-1, 1, 2)
                     segments = np.concatenate([points[:-1], points[1:]], axis=1)
@@ -1028,16 +968,13 @@ class PlottingApp(QMainWindow):
                      self.ax.xaxis.set_minor_locator(ticker.MultipleLocator(minor_x_interval))
                 else:
                      self.ax.xaxis.set_minor_locator(ticker.NullLocator()) 
-        # <--- 修正 1: 為文字型X軸加上刻度定位器 (START) --->
-        elif not all_x_numeric and self.datasets and not self.box_checkbox.isChecked():
-            x_labels = self.datasets[0]['x']
+
+        elif self.datasets and not self.box_checkbox.isChecked():
             interval = max(1, int(self.x_interval_spinbox.value()))
-            
-            self.ax.xaxis.set_major_locator(ticker.IndexLocator(base=interval, offset=0))
-            self.ax.xaxis.set_major_formatter(ticker.FuncFormatter(
-                lambda i, pos: x_labels[int(i)] if 0 <= i < len(x_labels) else ''
-            ))
-        # <--- 修正 1: (END) --->
+            x_labels = self.datasets[0]['x']
+            tick_positions = range(0, len(x_labels), interval)
+            tick_labels = [x_labels[i] for i in tick_positions]
+            self.ax.set_xticks(tick_positions, tick_labels)
 
         if all_y_numeric:
             y_interval = self.y_interval_spinbox.value()
@@ -1075,7 +1012,7 @@ class PlottingApp(QMainWindow):
 
         try:
             self.figure.tight_layout()
-        except (ValueError, TypeError) as e:
+        except ValueError as e:
             print(f"無法自動調整佈局: {e}")
         self.canvas.draw()
         
@@ -1461,6 +1398,7 @@ class PlottingApp(QMainWindow):
         self.update_table(); self.update_plot()
         self.update_series_combo()
 
+    # <--- 修正 4: 修正 findChildren 的呼叫方式 (START) --->
     def get_settings(self):
         """
         將所有目前的 UI 設定收集到一個字典中。
@@ -1471,6 +1409,7 @@ class PlottingApp(QMainWindow):
         
         all_widgets = []
         for widget_type in widget_types:
+            # 逐一為每種類型呼叫 findChildren，並將結果收集起來
             all_widgets.extend(self.findChildren(widget_type))
 
         for widget in all_widgets:
@@ -1478,6 +1417,7 @@ class PlottingApp(QMainWindow):
                 continue
 
             obj_name = widget.objectName()
+            # 根據類別名稱來決定如何獲取數值
             class_name = widget.metaObject().className()
 
             if class_name == 'QLineEdit':
@@ -1494,6 +1434,7 @@ class PlottingApp(QMainWindow):
         settings["x_tick_rotation"] = self.x_tick_rotation_spinbox.value()
         settings["y_tick_rotation"] = self.y_tick_rotation_spinbox.value()
         return settings
+    # <--- 修正 4: (END) --->
 
     def set_settings(self, s):
         """
@@ -1616,6 +1557,4 @@ if __name__ == '__main__':
         msg.setInformativeText(traceback.format_exc())
         msg.setWindowTitle("程式啟動錯誤")
         msg.exec()
-
-
 
